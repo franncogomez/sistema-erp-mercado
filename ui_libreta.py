@@ -3,6 +3,7 @@ import tkinter.messagebox as messagebox
 from tkinter import ttk
 import sqlite3
 import os
+from datetime import datetime
 
 class VentanaLibreta(ctk.CTkToplevel):
     def __init__(self, parent):
@@ -13,6 +14,9 @@ class VentanaLibreta(ctk.CTkToplevel):
         self.grab_set()
 
         self.ruta_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sistema_mercado.db")
+
+        # 🛡️ PARCHE: Prevenir crasheos en instalaciones nuevas
+        self.verificar_tabla_libreta()
 
         # ==========================================
         # 🟢 ENCABEZADO Y MÉTRICAS
@@ -33,21 +37,17 @@ class VentanaLibreta(ctk.CTkToplevel):
         # 🟡 TABLA DE DEUDORES
         # ==========================================
         style = ttk.Style()
-        style.theme_use("default") # Obliga a Windows a soltar el control del color
+        style.theme_use("default") 
         
-        # Color del encabezado
         style.configure("Treeview.Heading", font=("Roboto", 12, "bold"), background="#1E293B", foreground="white")
-        
-        # 🛡️ FONDO GRIS OSCURO PARA CUIDAR LA VISTA
         style.configure("Treeview", 
                         font=("Roboto", 12), 
                         rowheight=30, 
-                        background="#2D2D2D",      # Gris oscuro mate
-                        fieldbackground="#2D2D2D", # Fondo de las celdas vacías
-                        foreground="white",        # Letra blanca
+                        background="#2D2D2D",      
+                        fieldbackground="#2D2D2D", 
+                        foreground="white",        
                         borderwidth=0)
         
-        # Color azul al hacer clic en un cliente
         style.map("Treeview", background=[('selected', '#1E88E5')])
 
         self.frame_tabla = ctk.CTkFrame(self)
@@ -78,8 +78,25 @@ class VentanaLibreta(ctk.CTkToplevel):
     # ==========================================
     # ⚙️ LÓGICA DE DATOS
     # ==========================================
+    def verificar_tabla_libreta(self):
+        try:
+            conexion = sqlite3.connect(self.ruta_db)
+            cursor = conexion.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cuentas_corrientes (
+                    id_cliente INTEGER PRIMARY KEY AUTOINCREMENT,
+                    alias_cliente TEXT UNIQUE,
+                    deuda_total REAL
+                )
+            """)
+            conexion.commit()
+        except Exception as e:
+            print("Aviso interno:", e)
+        finally:
+            if 'conexion' in locals():
+                conexion.close()
+
     def cargar_cuentas(self):
-        # Limpiamos la tabla
         for item in self.tabla.get_children():
             self.tabla.delete(item)
             
@@ -100,7 +117,6 @@ class VentanaLibreta(ctk.CTkToplevel):
                 total_clientes += 1
                 plata_calle += deuda
                 
-            # Actualizamos los carteles de arriba
             self.lbl_total_clientes.configure(text=f"Clientes Activos: {total_clientes}")
             self.lbl_plata_calle.configure(text=f"Plata en la calle: $ {plata_calle:.2f}")
                 
@@ -137,16 +153,14 @@ class VentanaLibreta(ctk.CTkToplevel):
                 messagebox.showerror("❌ Error", "El monto ingresado es mayor a la deuda actual.")
                 return
                 
-            import datetime
-            fecha_actual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             conexion = sqlite3.connect(self.ruta_db)
             cursor = conexion.cursor()
             
-            # 1. Restamos la plata de la libreta del cliente
-            cursor.execute("UPDATE cuentas_corrientes SET deuda_total = deuda_total - ? WHERE alias_cliente = ?", (monto_pago, alias))
+            # 🛡️ PARCHE: Obligamos a la base de datos a redondear a 2 decimales
+            cursor.execute("UPDATE cuentas_corrientes SET deuda_total = ROUND(deuda_total - ?, 2) WHERE alias_cliente = ?", (monto_pago, alias))
             
-            # 2. Ingresamos la plata a la caja general del día
             cursor.execute("INSERT INTO ventas (fecha, total, medio_pago) VALUES (?, ?, 'EFECTIVO')", (fecha_actual, monto_pago))
             
             conexion.commit()
@@ -154,7 +168,6 @@ class VentanaLibreta(ctk.CTkToplevel):
             
             messagebox.showinfo("✅ Pago Registrado", f"Se descontaron ${monto_pago:.2f} de la cuenta de {alias}.\n\nEse dinero ya impactó en la Caja.")
             
-            # Recargamos la tabla visual
             self.cargar_cuentas()
             
         except ValueError:
@@ -162,12 +175,9 @@ class VentanaLibreta(ctk.CTkToplevel):
         except Exception as e:
             messagebox.showerror("❌ Error Crítico", f"Fallo al registrar el pago:\n{e}")
         
-# ==========================================
-# CÓDIGO DE PRUEBA INDIVIDUAL
-# ==========================================
 if __name__ == "__main__":
     app = ctk.CTk()
     app.geometry("100x100")
-    app.withdraw() # Oculta la ventanita fea de fondo
+    app.withdraw() 
     v = VentanaLibreta(app)
     app.mainloop()
