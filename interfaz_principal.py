@@ -11,7 +11,7 @@ from datetime import datetime
 from ui_caja import VentanaCaja
 from ui_stock import VentanaStock
 from ui_arqueo import VentanaArqueo
-from ui_libreta import VentanaLibreta  # 👈 Acá conectamos tu módulo de fiados
+from ui_libreta import VentanaLibreta 
 
 # ==========================================
 # 🔒 BARRERA DE SEGURIDAD CRIPTOGRÁFICA
@@ -90,7 +90,7 @@ class MenuPrincipal(ctk.CTk):
         self.btn_stock = ctk.CTkButton(self.frame_botones, text="📦 Gestionar Stock", width=250, height=45, font=("Roboto", 15, "bold"), command=self.gestionar_stock)
         self.btn_stock.pack(pady=10)
         
-        # 👈 NUEVO BOTÓN PARA LOS FIADOS
+        #  NUEVO BOTÓN PARA LOS FIADOS
         self.btn_libreta = ctk.CTkButton(self.frame_botones, text="📓 Libreta de Fiados", fg_color="#1E88E5", hover_color="#1565C0", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_libreta)
         self.btn_libreta.pack(pady=10)
 
