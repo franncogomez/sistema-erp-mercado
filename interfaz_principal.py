@@ -11,46 +11,38 @@ from datetime import datetime
 from ui_caja import VentanaCaja
 from ui_stock import VentanaStock
 from ui_arqueo import VentanaArqueo
+from ui_libreta import VentanaLibreta  # 👈 Acá conectamos tu módulo de fiados
 
 # ==========================================
 # 🔒 BARRERA DE SEGURIDAD CRIPTOGRÁFICA
 # ==========================================
 def verificar_licencia():
-    # 🛡️ Forzamos rutas absolutas para evitar crasheos en el .exe
     ruta_base = os.path.dirname(os.path.abspath(__file__))
     ruta_lic = os.path.join(ruta_base, "licencia.key")
     ruta_pub = os.path.join(ruta_base, "llave_publica.pem")
 
     try:
-        # 1. Leemos el hardware de forma INVISIBLE (sin que parpadee el CMD)
         comando = ['powershell.exe', '-Command', '(Get-CimInstance -Class Win32_ComputerSystemProduct).UUID']
-        
-        # Bandera específica de Windows para ocultar la consola
         CREATE_NO_WINDOW = 0x08000000 
         uuid_pc = subprocess.check_output(comando, text=True, stderr=subprocess.STDOUT, creationflags=CREATE_NO_WINDOW).strip()
 
-        # 2. Buscamos y leemos el archivo de licencia mensual
         with open(ruta_lic, "r") as arch_lic:
             paquete = json.load(arch_lic)
             
         datos_licencia = paquete["datos"]
         firma_hex = paquete["firma"]
         
-        # 3. Leemos tu Llave Pública
         with open(ruta_pub, "rb") as arch_pub:
             llave_publica = rsa.PublicKey.load_pkcs1(arch_pub.read())
             
-        # 4. Verificamos que la firma matemática sea tuya (inquebrantable)
         mensaje = json.dumps(datos_licencia).encode('utf8')
         firma_bytes = bytes.fromhex(firma_hex)
         
         rsa.verify(mensaje, firma_bytes, llave_publica)
         
-        # 5. Verificamos que no hayan copiado el sistema a otra PC
         if datos_licencia["uuid_placa"] != uuid_pc:
             raise Exception("Licencia no válida para esta computadora.\nEl hardware no coincide.")
             
-        # 6. Verificamos que el mes esté pago
         fecha_vencimiento = datetime.strptime(datos_licencia["vencimiento"], "%Y-%m-%d").date()
         fecha_actual = datetime.now().date()
         
@@ -78,7 +70,7 @@ class MenuPrincipal(ctk.CTk):
         super().__init__()
 
         self.title("Sistema Mercado ERP - Panel de Control")
-        self.geometry("600x500")
+        self.geometry("600x550") # 🔧 Agrandamos 50px para que entre el nuevo botón
         self.resizable(False, False)
 
         # --- TÍTULO ---
@@ -97,6 +89,10 @@ class MenuPrincipal(ctk.CTk):
 
         self.btn_stock = ctk.CTkButton(self.frame_botones, text="📦 Gestionar Stock", width=250, height=45, font=("Roboto", 15, "bold"), command=self.gestionar_stock)
         self.btn_stock.pack(pady=10)
+        
+        # 👈 NUEVO BOTÓN PARA LOS FIADOS
+        self.btn_libreta = ctk.CTkButton(self.frame_botones, text="📓 Libreta de Fiados", fg_color="#1E88E5", hover_color="#1565C0", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_libreta)
+        self.btn_libreta.pack(pady=10)
 
         self.btn_arqueo = ctk.CTkButton(self.frame_botones, text="🏦 Arqueo y Cierres", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_arqueo)
         self.btn_arqueo.pack(pady=10)
@@ -125,6 +121,9 @@ class MenuPrincipal(ctk.CTk):
 
     def gestionar_stock(self):
         VentanaStock(self)
+        
+    def abrir_libreta(self):
+        VentanaLibreta(self)
 
     def abrir_arqueo(self):
         VentanaArqueo(self)
