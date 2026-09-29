@@ -4,22 +4,166 @@ import json
 import sys
 import subprocess
 import os
+import sqlite3
+import socket
+import threading
+import uvicorn
+import qrcode
+from PIL import Image
+from fastapi import FastAPI
 from tkinter import messagebox
 from datetime import datetime
 
-# 🔗 IMPORTAMOS TUS MÓDULOS
+# 🔗 IMPORTAMOS los MÓDULOS DE INTERFAZ
 from ui_caja import VentanaCaja
 from ui_stock import VentanaStock
 from ui_arqueo import VentanaArqueo
-from ui_libreta import VentanaLibreta 
+from ui_libreta import VentanaLibreta
 
 # ==========================================
-# 🔒 BARRERA DE SEGURIDAD CRIPTOGRÁFICA
+# 📡 1. MOTOR DEL SERVIDOR MÓVIL (FASTAPI)
+# ==========================================
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+import sqlite3
+import uvicorn
+import socket
+
+api = FastAPI()
+
+# 📱 1.1 INTERFAZ WEB HTML/CSS/JS (Se envía al celular)
+@api.get("/", response_class=HTMLResponse)
+def panel_movil():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Control de Stock</title>
+        <style>
+            body { font-family: Arial, sans-serif; background: #1E293B; color: white; padding: 20px; }
+            h2 { text-align: center; color: #38BDF8; }
+            input { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 20px; box-sizing: border-box; border-radius: 8px; border: none; text-align: center; }
+            .producto { background: #334155; padding: 15px; margin-bottom: 10px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+            .producto h3 { margin: 0 0 10px 0; font-size: 20px; }
+            .stock { font-size: 18px; margin-bottom: 15px; color: #94A3B8;}
+            .stock b { color: #34D399; font-size: 22px;}
+            .botones { display: flex; justify-content: space-between; }
+            button { padding: 15px 30px; font-size: 20px; font-weight: bold; color: white; border: none; border-radius: 8px; cursor: pointer; width: 45%; }
+            .btn-restar { background: #EF4444; }
+            .btn-sumar { background: #10B981; }
+        </style>
+    </head>
+    <body>
+        <h2>📦 Buscador por Código</h2>
+        <!-- Modificado para que sea teclado numérico en el celular -->
+        <input type="number" id="buscador" placeholder="Últimos números del código..." onkeyup="buscar()">
+        <div id="resultados"></div>
+
+        <script>
+            async function buscar() {
+                const query = document.getElementById("buscador").value;
+                if (query.length < 3) return; 
+                
+                const res = await fetch(`/api/buscar/${query}`);
+                const data = await res.json();
+                
+                const div = document.getElementById("resultados");
+                div.innerHTML = "";
+                
+                data.forEach(prod => {
+                    div.innerHTML += `
+                        <div class="producto">
+                            <h3>${prod.nombre}</h3>
+                            <div class="stock">Stock actual: <b>${prod.stock}</b></div>
+                            <div class="botones">
+                                <button class="btn-restar" onclick="actualizar('${prod.codigo}', -1)">- 1</button>
+                                <button class="btn-sumar" onclick="actualizar('${prod.codigo}', 1)">+ 1</button>
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            async function actualizar(codigo, variacion) {
+                await fetch('/api/actualizar', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({codigo: codigo, variacion: variacion})
+                });
+                buscar(); 
+            }
+        </script>
+    </body>
+    </html>
+    """
+    return html_content
+
+# 🔍 1.2 RUTA PARA BUSCAR PRODUCTOS EN LA BASE DE DATOS
+@api.get("/api/buscar/{query}")
+def buscar_producto(query: str):
+    ruta_base = os.path.dirname(os.path.abspath(__file__))
+    ruta_db = os.path.join(ruta_base, "sistema_mercado.db")
+    
+    conexion = sqlite3.connect(ruta_db, check_same_thread=False)
+    cursor = conexion.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    
+    cursor.execute("SELECT codigo_barras, nombre, stock FROM productos WHERE codigo_barras LIKE ? LIMIT 10", (f'%{query}',))
+        
+    # ⚠️ CORRECCIÓN CLAVE: Devolvemos "codigo" para que el frontend HTML lo pueda leer correctamente
+    resultados = [{"codigo": f[0], "nombre": f[1], "stock": f[2]} for f in cursor.fetchall()]
+    
+    conexion.close()
+    return resultados
+
+# ✍️ 1.3 RUTA PARA ACTUALIZAR EL STOCK
+@api.post("/api/actualizar")
+async def actualizar_stock(request: Request):
+    datos = await request.json()
+    
+    # 🧹 Limpiamos espacios basura que puedan venir del celular o del Excel
+    codigo_limpio = str(datos["codigo"]).strip()
+    variacion = int(datos["variacion"])
+    
+    ruta_base = os.path.dirname(os.path.abspath(__file__))
+    ruta_db = os.path.join(ruta_base, "sistema_mercado.db")
+    
+    conexion = sqlite3.connect(ruta_db, check_same_thread=False)
+    cursor = conexion.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    
+    # 🛡️ Usamos CAST para obligar a SQLite a tratar el stock como un número matemático
+    cursor.execute("UPDATE productos SET stock = CAST(stock AS INTEGER) + ? WHERE codigo_barras = ?", (variacion, codigo_limpio))
+    
+    conexion.commit()
+    conexion.close()
+    
+    return {"status": "ok"}
+
+def arrancar_servidor():
+    uvicorn.run(api, host="0.0.0.0", port=8000, log_level="error")
+
+def obtener_ip_local():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
+# ==========================================
+# 🔒 2. SEGURIDAD CRIPTOGRÁFICA Y TEMPORAL
 # ==========================================
 def verificar_licencia():
     ruta_base = os.path.dirname(os.path.abspath(__file__))
     ruta_lic = os.path.join(ruta_base, "licencia.key")
     ruta_pub = os.path.join(ruta_base, "llave_publica.pem")
+    ruta_db = os.path.join(ruta_base, "sistema_mercado.db")
 
     try:
         comando = ['powershell.exe', '-Command', '(Get-CimInstance -Class Win32_ComputerSystemProduct).UUID']
@@ -37,30 +181,42 @@ def verificar_licencia():
             
         mensaje = json.dumps(datos_licencia).encode('utf8')
         firma_bytes = bytes.fromhex(firma_hex)
-        
         rsa.verify(mensaje, firma_bytes, llave_publica)
         
         if datos_licencia["uuid_placa"] != uuid_pc:
             raise Exception("Licencia no válida para esta computadora.\nEl hardware no coincide.")
             
         fecha_vencimiento = datetime.strptime(datos_licencia["vencimiento"], "%Y-%m-%d").date()
-        fecha_actual = datetime.now().date()
+        fecha_actual_obj = datetime.now().date()
+        fecha_actual_str = fecha_actual_obj.strftime("%Y-%m-%d")
         
-        if fecha_actual > fecha_vencimiento:
-            raise Exception(f"El servicio expiró el {fecha_vencimiento}.\nPor favor, contacte a Franco para renovar.")
+        if fecha_actual_obj > fecha_vencimiento:
+            raise Exception(f"El servicio expiró el {fecha_vencimiento}.\nPor favor, contacte al desarrollador.")
+
+        conexion = sqlite3.connect(ruta_db)
+        cursor = conexion.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS seguridad_reloj (id INTEGER PRIMARY KEY, ultima_fecha DATE)")
+        cursor.execute("SELECT ultima_fecha FROM seguridad_reloj WHERE id = 1")
+        registro = cursor.fetchone()
+        
+        if registro:
+            if fecha_actual_str < registro[0]:
+                conexion.close()
+                raise Exception("⚠️ Error de Sincronización.\nLa fecha de Windows ha sido alterada.")
+            else:
+                cursor.execute("UPDATE seguridad_reloj SET ultima_fecha = ? WHERE id = 1", (fecha_actual_str,))
+        else:
+            cursor.execute("INSERT INTO seguridad_reloj (id, ultima_fecha) VALUES (1, ?)", (fecha_actual_str,))
             
-    except FileNotFoundError:
-        messagebox.showerror("⛔ Sistema Bloqueado", "No se encontró la licencia o la llave pública en la carpeta del sistema.")
-        sys.exit()
-    except rsa.VerificationError:
-        messagebox.showerror("⛔ Sistema Bloqueado", "El archivo de licencia ha sido adulterado o corrompido.")
-        sys.exit()
+        conexion.commit()
+        conexion.close()
+            
     except Exception as e:
         messagebox.showerror("⛔ Sistema Bloqueado", str(e))
         sys.exit()
 
 # ==========================================
-# 🎨 CONFIGURACIÓN VISUAL BÁSICA
+# 🎨 3. INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
 ctk.set_default_color_theme("blue") 
 ctk.set_appearance_mode("dark") 
@@ -70,41 +226,68 @@ class MenuPrincipal(ctk.CTk):
         super().__init__()
 
         self.title("Sistema Mercado ERP - Panel de Control")
-        self.geometry("600x550") # 🔧 Agrandamos 50px para que entre el nuevo botón
+        # 🔧 Agrandamos la ventana para acomodar el servidor y el QR
+        self.geometry("750x650")
         self.resizable(False, False)
 
-        # --- TÍTULO ---
+        # Títulos
         self.lbl_titulo = ctk.CTkLabel(self, text="🏪 Sistema Mercado", font=("Roboto", 28, "bold"))
-        self.lbl_titulo.pack(pady=(30, 10))
-        
+        self.lbl_titulo.pack(pady=(20, 5))
         self.lbl_subtitulo = ctk.CTkLabel(self, text="Panel de Administración General", font=("Roboto", 14), text_color="gray")
-        self.lbl_subtitulo.pack(pady=(0, 30))
+        self.lbl_subtitulo.pack(pady=(0, 20))
 
-        self.frame_botones = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_botones.pack(pady=10)
+        # Contenedor dividido: Izquierda (Botones) | Derecha (Móvil)
+        self.frame_central = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_central.pack(fill="both", expand=True, padx=20)
 
-        # --- BOTONES DEL SISTEMA ---
-        self.btn_caja = ctk.CTkButton(self.frame_botones, text="🛒 Abrir Caja Registradora", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_caja)
+        # ----- COLUMNA IZQUIERDA: BOTONES -----
+        self.col_botones = ctk.CTkFrame(self.frame_central, fg_color="transparent")
+        self.col_botones.pack(side="left", fill="y", padx=20)
+
+        self.btn_caja = ctk.CTkButton(self.col_botones, text="🛒 Abrir Caja Registradora", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_caja)
         self.btn_caja.pack(pady=10)
 
-        self.btn_stock = ctk.CTkButton(self.frame_botones, text="📦 Gestionar Stock", width=250, height=45, font=("Roboto", 15, "bold"), command=self.gestionar_stock)
+        self.btn_stock = ctk.CTkButton(self.col_botones, text="📦 Gestionar Stock", width=250, height=45, font=("Roboto", 15, "bold"), command=self.gestionar_stock)
         self.btn_stock.pack(pady=10)
         
-        #  NUEVO BOTÓN PARA LOS FIADOS
-        self.btn_libreta = ctk.CTkButton(self.frame_botones, text="📓 Libreta de Fiados", fg_color="#1E88E5", hover_color="#1565C0", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_libreta)
+        self.btn_libreta = ctk.CTkButton(self.col_botones, text="📓 Libreta de Fiados", fg_color="#1E88E5", hover_color="#1565C0", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_libreta)
         self.btn_libreta.pack(pady=10)
 
-        self.btn_arqueo = ctk.CTkButton(self.frame_botones, text="🏦 Arqueo y Cierres", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_arqueo)
+        self.btn_arqueo = ctk.CTkButton(self.col_botones, text="🏦 Arqueo y Cierres", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_arqueo)
         self.btn_arqueo.pack(pady=10)
 
-        # --- SWITCH MODO OSCURO / CLARO ---
+        # ----- COLUMNA DERECHA: CONEXIÓN MÓVIL -----
+        self.col_movil = ctk.CTkFrame(self.frame_central, fg_color="#1E293B", corner_radius=15)
+        self.col_movil.pack(side="right", fill="both", expand=True, padx=20, pady=10)
+
+        self.lbl_movil_titulo = ctk.CTkLabel(self.col_movil, text="📱 Conexión Móvil (Góndolas)", font=("Roboto", 16, "bold"))
+        self.lbl_movil_titulo.pack(pady=(15, 10))
+
+        # ⚙️ Generación Dinámica del QR (¡Con conversión a RGB!)
+        ip_actual = obtener_ip_local()
+        self.url_servidor = f"http://{ip_actual}:8000"
+        
+        # Generamos el QR, extraemos la imagen base y la forzamos a RGB
+        qr_crudo = qrcode.make(self.url_servidor)
+        img_qr_pil = qr_crudo.get_image().convert("RGB")
+        
+        self.qr_ctk = ctk.CTkImage(light_image=img_qr_pil, dark_image=img_qr_pil, size=(180, 180))
+        
+        self.lbl_qr = ctk.CTkLabel(self.col_movil, text="", image=self.qr_ctk)
+        self.lbl_qr.pack(pady=10)
+
+        self.lbl_ip = ctk.CTkLabel(self.col_movil, text=f"Servidor Activo en:\n{self.url_servidor}", font=("Roboto", 12), text_color="#2FA572")
+        self.lbl_ip.pack(pady=5)
+
+        # ----- FOOTER -----
         self.switch_tema = ctk.CTkSwitch(self, text="🌙 Modo Oscuro", command=self.cambiar_tema, font=("Roboto", 12))
         self.switch_tema.pack(side="bottom", pady=20)
         self.switch_tema.select()
 
-    # ==========================================
-    # ⚙️ LÓGICA DE INTERFAZ
-    # ==========================================
+        # 🚀 LANZAMIENTO DEL HILO DEL SERVIDOR
+        self.hilo_api = threading.Thread(target=arrancar_servidor, daemon=True)
+        self.hilo_api.start()
+
     def cambiar_tema(self):
         if self.switch_tema.get() == 1:
             ctk.set_appearance_mode("dark")
@@ -113,24 +296,11 @@ class MenuPrincipal(ctk.CTk):
             ctk.set_appearance_mode("light")
             self.switch_tema.configure(text="☀️ Modo Claro")
 
-    # ==========================================
-    # 🚀 LANZADORES DE VENTANAS
-    # ==========================================
-    def abrir_caja(self):
-        VentanaCaja(self)
+    def abrir_caja(self): VentanaCaja(self)
+    def gestionar_stock(self): VentanaStock(self)
+    def abrir_libreta(self): VentanaLibreta(self)
+    def abrir_arqueo(self): VentanaArqueo(self)
 
-    def gestionar_stock(self):
-        VentanaStock(self)
-        
-    def abrir_libreta(self):
-        VentanaLibreta(self)
-
-    def abrir_arqueo(self):
-        VentanaArqueo(self)
-
-# ==========================================
-# 🏁 ARRANQUE DEL SISTEMA COMPLETO
-# ==========================================
 if __name__ == "__main__":
     verificar_licencia()
     app = MenuPrincipal()
