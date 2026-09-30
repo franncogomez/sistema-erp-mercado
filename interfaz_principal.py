@@ -9,10 +9,18 @@ import socket
 import threading
 import uvicorn
 import qrcode
+import sqlite3
+import uvicorn
+import socket
+import uuid
 from PIL import Image
 from fastapi import FastAPI
 from tkinter import messagebox
-from datetime import datetime
+from datetime import datetime, timedelta
+from supabase import create_client, Client
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from dotenv import load_dotenv
 
 # 🔗 IMPORTAMOS los MÓDULOS DE INTERFAZ
 from ui_caja import VentanaCaja
@@ -21,14 +29,114 @@ from ui_arqueo import VentanaArqueo
 from ui_libreta import VentanaLibreta
 
 # ==========================================
+#  MÓDULO DE VALIDACIÓN (Supabase)
+# ==========================================
+
+load_dotenv() 
+URL_NUBE = os.getenv("SUPABASE_URL")
+LLAVE_API = os.getenv("SUPABASE_KEY")
+
+def gestionar_licencia_local(nueva_fecha=None):
+    """Guarda la fecha de la nube en la PC, o la lee si no hay internet."""
+    ruta_base = os.path.dirname(os.path.abspath(__file__))
+    ruta_db = os.path.join(ruta_base, "sistema_mercado.db")
+    conexion = sqlite3.connect(ruta_db)
+    cursor = conexion.cursor()
+    
+    # 1. Nos aseguramos de que exista una tabla exclusiva para la licencia
+    cursor.execute('''CREATE TABLE IF NOT EXISTS licencia_local (id INTEGER PRIMARY KEY, vencimiento TEXT)''')
+    
+    if nueva_fecha:
+        # 2. Si hay internet y bajamos una fecha nueva, pisamos la vieja y guardamos
+        cursor.execute("DELETE FROM licencia_local")
+        cursor.execute("INSERT INTO licencia_local (vencimiento) VALUES (?)", (nueva_fecha,))
+        conexion.commit()
+        resultado = nueva_fecha
+    else:
+        # 3. Si no hay internet, rescatamos la última fecha guardada
+        cursor.execute("SELECT vencimiento FROM licencia_local LIMIT 1")
+        fila = cursor.fetchone()
+        resultado = fila[0] if fila else None
+        
+    conexion.close()
+    return resultado
+
+def verificar_licencia_nube():
+    id_pc = str(hex(uuid.getnode()))
+    fecha_evaluar = None
+    origen_dato = "NUBE ☁️"
+    
+    try:
+        print(f"📡 Verificando licencia en internet para: {id_pc}")
+        supabase: Client = create_client(URL_NUBE, LLAVE_API)
+        respuesta = supabase.table("clientes").select("*").eq("id_hardware", id_pc).execute()
+        
+        if len(respuesta.data) > 0:
+            fecha_evaluar = respuesta.data[0]["fecha_vencimiento"]
+            # ¡Inyección silenciosa! Guardamos esta fecha en SQLite para uso offline
+            gestionar_licencia_local(fecha_evaluar)
+        else:
+            print("❌ Equipo NO registrado en internet.")
+            return False
+            
+    except Exception as e:
+        print("⚠️ Sin internet. Buscando licencia de respaldo en la base de datos local...")
+        # Si Supabase falla por falta de internet, pedimos la fecha local
+        fecha_evaluar = gestionar_licencia_local()
+        origen_dato = "LOCAL (Offline) 💾"
+        
+    if not fecha_evaluar:
+        print("🛑 Error crítico: No hay licencias registradas ni en la nube ni localmente.")
+        return False
+        
+    # --- LÓGICA DE TIEMPOS Y MENSAJES ---
+    # Usamos .date() para comparar días exactos sin que importe la hora del reloj
+    hoy = datetime.now().date()
+    vencimiento_dt = datetime.strptime(fecha_evaluar, "%Y-%m-%d").date()
+    
+    dias_restantes = (vencimiento_dt - hoy).days
+    fecha_corte_definitivo = vencimiento_dt + timedelta(days=2) # 48 hs de gracia
+    
+    print(f"✅ Licencia cargada desde {origen_dato} | Vence: {fecha_evaluar}")
+    
+    # CASO A: Faltan más de 5 días (Entra directo sin molestar)
+    if dias_restantes > 5:
+        return True
+        
+    # CASO B: Faltan entre 0 y 5 días (Aviso súper empático)
+    elif 0 <= dias_restantes <= 5:
+        mensaje = (
+            f"¡Hola! 👋 Te recuerdo que tu suscripción vence en {dias_restantes} días "
+            f"(el {fecha_evaluar}).\n\n"
+            f"Para evitar interrupciones, te sugerimos renovar antes de la fecha de vencimiento.\n\n"
+            f"Si ya realizaste el pago, ¡gracias! Tu suscripción se actualizará automáticamente en la nube."
+        )
+        messagebox.showinfo("Aviso de Suscripción", mensaje)
+        return True
+        
+    # CASO C: Ya venció, pero estamos en los 2 días de gracia (Aviso firme y transparente)
+    elif hoy > vencimiento_dt and hoy <= fecha_corte_definitivo:
+        mensaje_gracia = (
+            f"⚠️️ Tu suscripción venció el {fecha_evaluar}.\n\n"
+            f"Se ha activado una extensión de cortesía por 48 hs. El sistema se bloqueará "
+            f"completamente el {fecha_corte_definitivo.strftime('%Y-%m-%d')}.\n\n"
+            f"Por favor, regularizá el pago a la brevedad para no interrumpir tus ventas."
+        )
+        messagebox.showwarning("Atención - Período de Gracia", mensaje_gracia)
+        return True
+        
+    # CASO D: Pasó la fecha de gracia (Bloqueo total)
+    elif hoy > fecha_corte_definitivo:
+        messagebox.showerror(
+            "Sistema Bloqueado", 
+            f"🛑 El período de gracia finalizó el {fecha_corte_definitivo.strftime('%Y-%m-%d')}.\n\n"
+            f"El sistema se encuentra bloqueado por falta de pago. Por favor, comunicate con soporte para reactivarlo."
+        )
+        return False
+
+# ==========================================
 # 📡 1. MOTOR DEL SERVIDOR MÓVIL (FASTAPI)
 # ==========================================
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-import sqlite3
-import uvicorn
-import socket
-
 api = FastAPI()
 
 # 📱 1.1 INTERFAZ WEB HTML/CSS/JS (Se envía al celular)
@@ -300,8 +408,22 @@ class MenuPrincipal(ctk.CTk):
     def gestionar_stock(self): VentanaStock(self)
     def abrir_libreta(self): VentanaLibreta(self)
     def abrir_arqueo(self): VentanaArqueo(self)
-
+    
 if __name__ == "__main__":
-    verificar_licencia()
-    app = MenuPrincipal()
-    app.mainloop()
+    print("🔐 Iniciando control de licencias en la nube...")
+    
+    # 1. Llamamos a la función para que vaya a preguntar a Supabase
+    estado_licencia = verificar_licencia_nube()
+    
+    # 2. Decidimos si abrimos el programa o lo bloqueamos
+    if estado_licencia == True or estado_licencia == "OFFLINE":
+        print("🚀 Permiso concedido. Abriendo el Sistema Mercado...")
+        
+        verificar_licencia()
+        app = MenuPrincipal()
+        app.mainloop()
+        
+    else:
+        # Si la función devolvió False, mostramos error y el programa termina
+        print("🛑 ACCESO DENEGADO: La licencia está vencida o la computadora no está autorizada.")
+        # Al no ejecutar el mainloop(), la ventana nunca se abre y bloqueas el sistema.
