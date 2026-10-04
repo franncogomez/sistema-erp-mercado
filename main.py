@@ -26,7 +26,10 @@ from dotenv import load_dotenv
 from ui_caja import VentanaCaja
 from ui_stock import VentanaStock
 from ui_arqueo import VentanaArqueo
+from ui_gastos import VentanaGastos
+from ui_ajustes import VentanaAjustes
 from ui_libreta import VentanaLibreta
+from ui_estadisticas import VentanaEstadisticas
 
 # ==========================================
 #  MÓDULO DE VALIDACIÓN (Supabase)
@@ -61,8 +64,23 @@ def gestionar_licencia_local(nueva_fecha=None):
     conexion.close()
     return resultado
 
+def obtener_id_hardware():
+    import winreg
+    try:
+        # Leemos el ID único e inmutable de la instalación de Windows
+        registry = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
+        key = winreg.OpenKey(registry, r"SOFTWARE\Microsoft\Cryptography")
+        machine_guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+        winreg.CloseKey(key)
+        return machine_guid
+    except Exception:
+        # Plan B de emergencia (si falla el registro, usamos la placa madre)
+        import subprocess
+        return subprocess.check_output('wmic csproduct get uuid').decode().split('\n')[1].strip()
+
 def verificar_licencia_nube():
-    id_pc = str(hex(uuid.getnode()))
+    id_pc = str(obtener_id_hardware()) 
+    
     fecha_evaluar = None
     origen_dato = "NUBE ☁️"
     
@@ -76,7 +94,12 @@ def verificar_licencia_nube():
             # ¡Inyección silenciosa! Guardamos esta fecha en SQLite para uso offline
             gestionar_licencia_local(fecha_evaluar)
         else:
-            print("❌ Equipo NO registrado en internet.")
+            mensaje = (
+                f"🛑 Este equipo no está autorizado para usar Sistema Mercado.\n\n"
+                f"Para activar tu licencia, enviale este código de hardware a Franco:\n\n"
+                f"👉 ID: {id_pc}"
+            )
+            messagebox.showerror("Equipo No Registrado", mensaje)
             return False
             
     except Exception as e:
@@ -117,7 +140,7 @@ def verificar_licencia_nube():
     # CASO C: Ya venció, pero estamos en los 2 días de gracia (Aviso firme y transparente)
     elif hoy > vencimiento_dt and hoy <= fecha_corte_definitivo:
         mensaje_gracia = (
-            f"⚠️️ Tu suscripción venció el {fecha_evaluar}.\n\n"
+            f"⚠ Tu suscripción venció el {fecha_evaluar}.\n\n"
             f"Se ha activado una extensión de cortesía por 48 hs. El sistema se bloqueará "
             f"completamente el {fecha_corte_definitivo.strftime('%Y-%m-%d')}.\n\n"
             f"Por favor, regularizá el pago a la brevedad para no interrumpir tus ventas."
@@ -133,6 +156,7 @@ def verificar_licencia_nube():
             f"El sistema se encuentra bloqueado por falta de pago. Por favor, comunicate con soporte para reactivarlo."
         )
         return False
+
 
 # ==========================================
 # 📡 1. MOTOR DEL SERVIDOR MÓVIL (FASTAPI)
@@ -364,6 +388,15 @@ class MenuPrincipal(ctk.CTk):
         self.btn_arqueo = ctk.CTkButton(self.col_botones, text="🏦 Arqueo y Cierres", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_arqueo)
         self.btn_arqueo.pack(pady=10)
 
+        self.btn_gastos = ctk.CTkButton(self.col_botones, text="💸 Pagos del Día", height=50, font=("Roboto", 16, "bold"), fg_color="#D32F2F", hover_color="#B71C1C", command=lambda: VentanaGastos(self))
+        self.btn_gastos.pack(pady=10, padx=20, fill="x")
+
+        self.btn_estadisticas = ctk.CTkButton(self.col_botones, text="📊 Historial y Estadísticas", height=50, font=("Roboto", 16, "bold"), fg_color="#F59E0B", hover_color="#D97706", command=lambda: VentanaEstadisticas(self))
+        self.btn_estadisticas.pack(pady=10, padx=20, fill="x")
+
+        self.btn_ajustes = ctk.CTkButton(self.col_botones, text="⚙️ Ajustes del Local", fg_color="#546E7A", hover_color="#455A64", height=50, font=("Roboto", 16, "bold"), command=self.abrir_ajustes)
+        self.btn_ajustes.pack(pady=10, padx=20, fill="x")
+
         # ----- COLUMNA DERECHA: CONEXIÓN MÓVIL -----
         self.col_movil = ctk.CTkFrame(self.frame_central, fg_color="#1E293B", corner_radius=15)
         self.col_movil.pack(side="right", fill="both", expand=True, padx=20, pady=10)
@@ -404,10 +437,45 @@ class MenuPrincipal(ctk.CTk):
             ctk.set_appearance_mode("light")
             self.switch_tema.configure(text="☀️ Modo Claro")
 
-    def abrir_caja(self): VentanaCaja(self)
+    def abrir_caja(self):
+        
+        ruta_base = os.path.dirname(os.path.abspath(__file__))
+        ruta_db = os.path.join(ruta_base, "sistema_mercado.db")
+        conexion = sqlite3.connect(ruta_db)
+        cursor = conexion.cursor()
+        
+        try:
+            # Buscamos la última operación de la tabla de arqueo
+            cursor.execute("SELECT tipo_operacion FROM arqueo_caja ORDER BY id_arqueo DESC LIMIT 1")
+            registro = cursor.fetchone()
+            
+            # Verificamos si la última operación fue una "Apertura"
+            # (Usamos .lower() y buscamos palabras clave por si lo guardás como "Apertura de Caja" o "Abrir Turno")
+            if registro and ("apertura" in registro[0].lower() or "abrir" in registro[0].lower()):
+                # La caja está abierta, lo dejamos pasar a facturar
+                VentanaCaja(self)
+            else:
+                # La última operación fue un cierre, o no se entiende el estado
+                messagebox.showwarning(
+                    "Caja Cerrada", 
+                    "⛔ No podés ingresar a la registradora.\nPrimero debés realizar la 'Apertura de Caja' desde la sección de Arqueo."
+                )
+        except sqlite3.OperationalError:
+            # Si da error porque la tabla "arqueo_caja" todavía no existe (ej: instalación nueva), bloqueamos.
+            messagebox.showwarning(
+                "Caja Cerrada", 
+                "⛔ El sistema es nuevo y la caja está cerrada.\nPor favor, realizá tu primera 'Apertura de Caja' en la sección de Arqueo."
+            )
+        except Exception as e:
+            # Si hay un error raro de Windows, dejamos abrir para no trabar el local, pero avisamos en consola
+            print(f"⚠️ Error leyendo el estado de la caja: {e}")
+            VentanaCaja(self) 
+        finally:
+            conexion.close()
     def gestionar_stock(self): VentanaStock(self)
     def abrir_libreta(self): VentanaLibreta(self)
     def abrir_arqueo(self): VentanaArqueo(self)
+    def abrir_ajustes(self): VentanaAjustes(self)
     
 if __name__ == "__main__":
     print("🔐 Iniciando control de licencias en la nube...")
@@ -418,8 +486,6 @@ if __name__ == "__main__":
     # 2. Decidimos si abrimos el programa o lo bloqueamos
     if estado_licencia == True or estado_licencia == "OFFLINE":
         print("🚀 Permiso concedido. Abriendo el Sistema Mercado...")
-        
-        verificar_licencia()
         app = MenuPrincipal()
         app.mainloop()
         

@@ -9,12 +9,10 @@ class VentanaArqueo(ctk.CTkToplevel):
         super().__init__(parent)
         
         self.title("🏦 Módulo Financiero - Arqueo de Caja")
-        self.geometry("600x600")
+        self.geometry("600x680") # Un poquito más alto para que entren todos los renglones
         self.grab_set()
 
         self.ruta_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sistema_mercado.db")
-        
-        # 🛡️ PARCHE 1: Prevenir crasheos en instalaciones nuevas
         self.verificar_tabla_arqueo()
 
         # ==========================================
@@ -42,14 +40,29 @@ class VentanaArqueo(ctk.CTkToplevel):
         self.lbl_efectivo = ctk.CTkLabel(self.frame_resumen, text="Ventas en Efectivo: $ 0.00", font=fuente_datos)
         self.lbl_efectivo.pack(pady=5, anchor="w", padx=40)
 
-        self.lbl_transf = ctk.CTkLabel(self.frame_resumen, text="Ventas por Transferencia: $ 0.00", font=fuente_datos)
+        self.lbl_mp = ctk.CTkLabel(self.frame_resumen, text="Ventas por Mercado Pago: $ 0.00", font=fuente_datos)
+        self.lbl_mp.pack(pady=5, anchor="w", padx=40)
+
+        self.lbl_transf = ctk.CTkLabel(self.frame_resumen, text="Ventas por Transferencia (Bancos): $ 0.00", font=fuente_datos)
         self.lbl_transf.pack(pady=5, anchor="w", padx=40)
 
-        self.lbl_cta_cte = ctk.CTkLabel(self.frame_resumen, text="Ventas en Cta. Corriente: $ 0.00", font=fuente_datos)
+        self.lbl_cta_cte = ctk.CTkLabel(self.frame_resumen, text="Ventas en Cta. Corriente (Fiado): $ 0.00", font=fuente_datos)
         self.lbl_cta_cte.pack(pady=5, anchor="w", padx=40)
 
-        self.lbl_total_esperado = ctk.CTkLabel(self.frame_resumen, text="EFECTIVO ESPERADO EN CAJA: $ 0.00", font=("Roboto", 16, "bold"), text_color="#D97706")
-        self.lbl_total_esperado.pack(pady=(20, 15))
+        # 👇 NUEVOS RENGLONES DE SALIDAS (Efectivo y Virtual) 👇
+        self.lbl_gastos_efec = ctk.CTkLabel(self.frame_resumen, text="Salidas por Pagos (Efectivo): -$ 0.00", font=("Roboto", 14, "bold"), text_color="#D32F2F")
+        self.lbl_gastos_efec.pack(pady=(15, 2), anchor="w", padx=40)
+
+        self.lbl_gastos_transf = ctk.CTkLabel(self.frame_resumen, text="Salidas por Pagos (Virtual): -$ 0.00", font=("Roboto", 14, "bold"), text_color="#D32F2F")
+        self.lbl_gastos_transf.pack(pady=(0, 5), anchor="w", padx=40)
+
+        # Separador visual
+        self.lbl_separador = ctk.CTkLabel(self.frame_resumen, text="---------------------------------------------------------", font=("Roboto", 14))
+        self.lbl_separador.pack(pady=2)
+
+        # 👇 INGRESO NETO REAL 👇
+        self.lbl_ingreso_total = ctk.CTkLabel(self.frame_resumen, text="INGRESO NETO DEL TURNO: $ 0.00", font=("Roboto", 16, "bold"), text_color="#1E88E5")
+        self.lbl_ingreso_total.pack(pady=(5, 15), anchor="w", padx=40)
 
         # ==========================================
         # 🔵 BOTONES DE ACCIÓN
@@ -84,6 +97,15 @@ class VentanaArqueo(ctk.CTkToplevel):
                     tipo_operacion TEXT,
                     monto_declarado REAL,
                     observaciones TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS gastos (
+                    id_gasto INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fecha DATETIME,
+                    motivo TEXT,
+                    monto_efectivo REAL,
+                    monto_transf REAL
                 )
             """)
             conexion.commit()
@@ -122,30 +144,53 @@ class VentanaArqueo(ctk.CTkToplevel):
     def limpiar_resumen(self):
         self.lbl_fondo_fijo.configure(text="Fondo Fijo Inicial: $ 0.00")
         self.lbl_efectivo.configure(text="Ventas en Efectivo: $ 0.00")
-        self.lbl_transf.configure(text="Ventas por Transferencia: $ 0.00")
-        self.lbl_cta_cte.configure(text="Ventas en Cta. Corriente: $ 0.00")
-        self.lbl_total_esperado.configure(text="EFECTIVO ESPERADO EN CAJA: $ 0.00")
+        self.lbl_mp.configure(text="Ventas por Mercado Pago: $ 0.00")
+        self.lbl_transf.configure(text="Ventas por Transferencia (Bancos): $ 0.00")
+        self.lbl_cta_cte.configure(text="Ventas en Cta. Corriente (Fiado): $ 0.00")
+        self.lbl_gastos_efec.configure(text="Salidas por Pagos (Efectivo): -$ 0.00")
+        self.lbl_gastos_transf.configure(text="Salidas por Pagos (Virtual): -$ 0.00")
+        self.lbl_ingreso_total.configure(text="INGRESO NETO DEL TURNO: $ 0.00")
 
     def calcular_resumen(self, cursor):
+        # 1. Leemos los ingresos por ventas
         cursor.execute("SELECT medio_pago, SUM(total) FROM ventas WHERE fecha >= ? GROUP BY medio_pago", (self.fecha_apertura,))
         ventas = cursor.fetchall()
 
         t_efectivo = 0.0
+        t_mp = 0.0
         t_transf = 0.0
         t_cta_cte = 0.0
 
         for medio, total in ventas:
             if medio == 'EFECTIVO': t_efectivo = total
+            elif medio == 'MERCADO PAGO': t_mp = total
             elif medio == 'TRANSFERENCIA': t_transf = total
             elif medio == 'CUENTA_CORRIENTE': t_cta_cte = total
 
-        self.efectivo_esperado = self.fondo_fijo + t_efectivo
+        # 2. Leemos las salidas por pagos y gastos (Efectivo y Transferencias)
+        cursor.execute("SELECT SUM(monto_efectivo), SUM(monto_transf) FROM gastos WHERE fecha >= ?", (self.fecha_apertura,))
+        resultado_gastos = cursor.fetchone()
+        
+        salidas_efectivo = resultado_gastos[0] if resultado_gastos[0] else 0.0
+        salidas_transf = resultado_gastos[1] if resultado_gastos[1] else 0.0
 
+        # 3. Matemáticas internas
+        self.efectivo_esperado = (self.fondo_fijo + t_efectivo) - salidas_efectivo
+        
+        # El ingreso neto es toda la plata que entró (física y virtual) menos toda la que salió para pagar.
+        ingreso_bruto = t_efectivo + t_mp + t_transf
+        ingreso_neto = ingreso_bruto - (salidas_efectivo + salidas_transf)
+
+        # 4. Actualización visual de etiquetas
         self.lbl_fondo_fijo.configure(text=f"Fondo Fijo Inicial: $ {self.fondo_fijo:.2f}")
         self.lbl_efectivo.configure(text=f"Ventas en Efectivo: $ {t_efectivo:.2f}")
-        self.lbl_transf.configure(text=f"Ventas por Transferencia: $ {t_transf:.2f}")
-        self.lbl_cta_cte.configure(text=f"Ventas en Cta. Corriente: $ {t_cta_cte:.2f}")
-        self.lbl_total_esperado.configure(text=f"EFECTIVO ESPERADO EN CAJA: $ {self.efectivo_esperado:.2f}")
+        self.lbl_mp.configure(text=f"Ventas por Mercado Pago: $ {t_mp:.2f}")
+        self.lbl_transf.configure(text=f"Ventas por Transferencia (Bancos): $ {t_transf:.2f}")
+        self.lbl_cta_cte.configure(text=f"Ventas en Cta. Corriente (Fiado): $ {t_cta_cte:.2f}")
+        
+        self.lbl_gastos_efec.configure(text=f"Salidas por Pagos (Efectivo): -$ {salidas_efectivo:.2f}")
+        self.lbl_gastos_transf.configure(text=f"Salidas por Pagos (Virtual): -$ {salidas_transf:.2f}")
+        self.lbl_ingreso_total.configure(text=f"INGRESO NETO DEL TURNO: $ {ingreso_neto:.2f}")
 
     def abrir_caja(self):
         dialogo = ctk.CTkInputDialog(text="Ingrese el Fondo Fijo Inicial (Cambio en caja):", title="🔓 Apertura de Caja")
@@ -177,7 +222,8 @@ class VentanaArqueo(ctk.CTkToplevel):
             messagebox.showerror("❌ Error", "El monto ingresado no es válido. Debe ser un número.")
 
     def cerrar_caja(self):
-        mensaje_rapido = f"Efectivo esperado en caja: 💰 ${self.efectivo_esperado:.2f}\n\n¿El dinero físico coincide EXACTAMENTE con este monto?"
+        # El sistema sabe exactamente cuánta plata física tiene que haber.
+        mensaje_rapido = f"Efectivo esperado en caja (Billetes físicos): 💰 ${self.efectivo_esperado:.2f}\n\n¿El dinero contado coincide EXACTAMENTE con este monto?"
         es_perfecto = messagebox.askyesno("🔒 Cierre Rápido", mensaje_rapido)
         
         if es_perfecto:
@@ -195,7 +241,6 @@ class VentanaArqueo(ctk.CTkToplevel):
                 messagebox.showerror("❌ Error", "El monto ingresado no es válido.")
                 return
 
-        # 🛡️ PARCHE 2: Redondeo matemático estricto para evitar bugs de flotantes
         diferencia = round(monto_real - self.efectivo_esperado, 2)
         
         resumen = f"Declarado: ${monto_real:.2f}\nEsperado: ${self.efectivo_esperado:.2f}\n"

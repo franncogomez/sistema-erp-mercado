@@ -65,6 +65,22 @@ class VentanaLibreta(ctk.CTkToplevel):
         self.tabla.pack(fill="both", expand=True)
 
         # ==========================================
+        # 🛠️ PANEL DE GESTIÓN DE CLIENTES
+        # ==========================================
+        # Cambiá 'self' por el nombre del contenedor principal si tu tabla está dentro de otro frame
+        self.frame_acciones_clientes = ctk.CTkFrame(self) 
+        self.frame_acciones_clientes.pack(pady=15, fill="x", padx=20)
+
+        self.btn_nuevo_cliente = ctk.CTkButton(self.frame_acciones_clientes, text="➕ Nuevo Cliente", fg_color="#2FA572", hover_color="#238259", height=40, font=("Roboto", 14, "bold"), command=self.agregar_cliente)
+        self.btn_nuevo_cliente.pack(side="left", padx=10, expand=True, fill="x")
+
+        self.btn_editar_cliente = ctk.CTkButton(self.frame_acciones_clientes, text="✏️ Editar Cliente", fg_color="#F59E0B", hover_color="#D97706", height=40, font=("Roboto", 14, "bold"), command=self.editar_cliente)
+        self.btn_editar_cliente.pack(side="left", padx=10, expand=True, fill="x")
+
+        self.btn_eliminar_cliente = ctk.CTkButton(self.frame_acciones_clientes, text="🗑️ Eliminar", fg_color="#D32F2F", hover_color="#B71C1C", height=40, font=("Roboto", 14, "bold"), command=self.eliminar_cliente)
+        self.btn_eliminar_cliente.pack(side="left", padx=10, expand=True, fill="x")
+
+        # ==========================================
         # 🔵 BOTONES (Solo Cobro)
         # ==========================================
         self.frame_acciones = ctk.CTkFrame(self, fg_color="transparent")
@@ -78,6 +94,113 @@ class VentanaLibreta(ctk.CTkToplevel):
     # ==========================================
     # ⚙️ LÓGICA DE DATOS
     # ==========================================
+    
+    def agregar_cliente(self):
+        import customtkinter as ctk
+        from tkinter import messagebox
+        import sqlite3
+
+        dialogo = ctk.CTkInputDialog(text="Ingrese el nombre o alias del nuevo cliente:", title="➕ Nuevo Cliente")
+        alias = dialogo.get_input()
+        
+        if not alias or not alias.strip(): 
+            return
+        
+        alias = alias.strip().upper()
+
+        try:
+            conexion = sqlite3.connect(self.ruta_db)
+            cursor = conexion.cursor()
+            
+            # Verificamos que no exista para no duplicar
+            cursor.execute("SELECT id_cliente FROM cuentas_corrientes WHERE alias_cliente = ?", (alias,))
+            if cursor.fetchone():
+                messagebox.showwarning("⚠️ Atención", f"El cliente '{alias}' ya existe en la libreta.")
+            else:
+                cursor.execute("INSERT INTO cuentas_corrientes (alias_cliente, deuda_total) VALUES (?, 0)", (alias,))
+                conexion.commit()
+                messagebox.showinfo("✅ Éxito", f"Cliente '{alias}' agregado correctamente.")
+                self.cargar_cuentas() # 🚨 Cambiá esto por el nombre de tu función que recarga la tabla
+                
+        except Exception as e:
+            messagebox.showerror("❌ Error", f"Ocurrió un problema:\n{e}")
+        finally:
+            if 'conexion' in locals(): conexion.close()
+
+    def editar_cliente(self):
+        import customtkinter as ctk
+        from tkinter import messagebox
+        import sqlite3
+
+        seleccion = self.tabla.selection() # 🚨 Asegurate de que "self.tabla" sea el nombre real de tu Treeview
+        if not seleccion:
+            messagebox.showwarning("⚠️ Atención", "Primero seleccione un cliente de la tabla haciendo clic.")
+            return
+
+        valores = self.tabla.item(seleccion[0])['values']
+        alias_actual = valores[0]
+
+        dialogo = ctk.CTkInputDialog(text=f"Modificar nombre de '{alias_actual}':", title="✏️ Editar Cliente")
+        nuevo_alias = dialogo.get_input()
+
+        if not nuevo_alias or not nuevo_alias.strip(): 
+            return
+            
+        nuevo_alias = nuevo_alias.strip().upper()
+        if nuevo_alias == alias_actual: 
+            return
+
+        try:
+            conexion = sqlite3.connect(self.ruta_db)
+            cursor = conexion.cursor()
+            cursor.execute("UPDATE cuentas_corrientes SET alias_cliente = ? WHERE alias_cliente = ?", (nuevo_alias, alias_actual))
+            conexion.commit()
+            
+            messagebox.showinfo("✅ Éxito", f"Nombre actualizado a '{nuevo_alias}'.")
+            self.cargar_cuentas() # 🚨 Recargar tabla
+            
+        except Exception as e:
+            messagebox.showerror("❌ Error", f"Ocurrió un problema:\n{e}")
+        finally:
+            if 'conexion' in locals(): conexion.close()
+
+    def eliminar_cliente(self):
+        from tkinter import messagebox
+        import sqlite3
+
+        seleccion = self.tabla.selection()
+        if not seleccion:
+            messagebox.showwarning("⚠️ Atención", "Primero seleccione un cliente para eliminar.")
+            return
+
+        valores = self.tabla.item(seleccion[0])['values']
+        alias = valores[0]
+        deuda = float(valores[1])
+
+        # Double Check inteligente: si hay deuda, la advertencia es más fuerte
+        if deuda > 0:
+            advertencia = f"¡CUIDADO! El cliente '{alias}' tiene una deuda de ${deuda:.2f}.\n\n¿Está COMPLETAMENTE SEGURO de querer eliminarlo y perder este registro?"
+        else:
+            advertencia = f"¿Seguro que desea eliminar a '{alias}' de la libreta?"
+
+        confirmar = messagebox.askyesno("🗑️ Confirmar Eliminación", advertencia)
+        if not confirmar: 
+            return
+
+        try:
+            conexion = sqlite3.connect(self.ruta_db)
+            cursor = conexion.cursor()
+            cursor.execute("DELETE FROM cuentas_corrientes WHERE alias_cliente = ?", (alias,))
+            conexion.commit()
+            
+            messagebox.showinfo("✅ Éxito", f"Cliente '{alias}' eliminado correctamente.")
+            self.cargar_cuentas() # 🚨 Recargar tabla
+            
+        except Exception as e:
+            messagebox.showerror("❌ Error", f"Ocurrió un problema al eliminar:\n{e}")
+        finally:
+            if 'conexion' in locals(): conexion.close()
+
     def verificar_tabla_libreta(self):
         try:
             conexion = sqlite3.connect(self.ruta_db)
@@ -104,7 +227,7 @@ class VentanaLibreta(ctk.CTkToplevel):
             conexion = sqlite3.connect(self.ruta_db)
             cursor = conexion.cursor()
             
-            cursor.execute("SELECT alias_cliente, deuda_total FROM cuentas_corrientes WHERE deuda_total > 0 ORDER BY alias_cliente ASC")
+            cursor.execute("SELECT alias_cliente, deuda_total FROM cuentas_corrientes ORDER BY alias_cliente ASC")
             cuentas = cursor.fetchall()
             
             total_clientes = 0
@@ -127,6 +250,11 @@ class VentanaLibreta(ctk.CTkToplevel):
                 conexion.close()
 
     def registrar_pago(self):
+        import sqlite3
+        from datetime import datetime
+        import customtkinter as ctk
+        from tkinter import messagebox
+        
         seleccion = self.tabla.selection()
         if not seleccion:
             messagebox.showwarning("⚠️ Atención", "Primero seleccione un cliente de la lista.")
@@ -136,44 +264,87 @@ class VentanaLibreta(ctk.CTkToplevel):
         alias = valores[0]
         deuda_actual = float(valores[1])
         
-        dialogo = ctk.CTkInputDialog(text=f"Cliente: {alias}\nDeuda Total: ${deuda_actual:.2f}\n\nIngrese el monto a entregar:", title="💰 Registrar Pago")
-        monto_str = dialogo.get_input()
+        # 1. Creamos una ventana flotante personalizada
+        ventana_pago = ctk.CTkToplevel(self)
+        ventana_pago.title("💰 Registrar Pago")
+        ventana_pago.geometry("350x380")
+        ventana_pago.grab_set() # Bloquea la ventana principal hasta que se cierre esta
         
-        if not monto_str: 
-            return
-
-        monto_str = monto_str.replace(',', '.')
+        lbl_info = ctk.CTkLabel(ventana_pago, text=f"Cliente: {alias}\nDeuda Total: ${deuda_actual:.2f}", font=("Roboto", 16, "bold"))
+        lbl_info.pack(pady=15)
         
-        try:
-            monto_pago = float(monto_str)
-            if monto_pago <= 0:
-                messagebox.showerror("❌ Error", "El monto debe ser mayor a cero.")
-                return
-            if monto_pago > deuda_actual:
-                messagebox.showerror("❌ Error", "El monto ingresado es mayor a la deuda actual.")
-                return
+        # 2. Entrada para el monto
+        lbl_monto = ctk.CTkLabel(ventana_pago, text="Monto a pagar:", font=("Roboto", 14))
+        lbl_monto.pack(pady=(10, 0))
+        
+        entry_monto = ctk.CTkEntry(ventana_pago, font=("Roboto", 16), justify="center", width=150)
+        entry_monto.pack(pady=5)
+        entry_monto.focus()
+        
+        # 3. Selector de Medio de Pago
+        lbl_metodo = ctk.CTkLabel(ventana_pago, text="¿Cómo pagó el cliente?:", font=("Roboto", 14))
+        lbl_metodo.pack(pady=(15, 0))
+        
+        # 🚨 Acá están las etiquetas exactas que lee tu Arqueo
+        combo_metodo = ctk.CTkComboBox(
+            ventana_pago, 
+            values=["EFECTIVO", "MERCADO PAGO", "TRANSFERENCIA"], 
+            font=("Roboto", 14), 
+            state="readonly",
+            width=200
+        )
+        combo_metodo.set("EFECTIVO") # Por defecto queda en efectivo
+        combo_metodo.pack(pady=5)
+        
+        # 4. Lógica de guardado
+        def confirmar_pago_deuda():
+            monto_str = entry_monto.get().replace(',', '.')
+            metodo_elegido = combo_metodo.get()
+            
+            try:
+                monto_pago = float(monto_str)
+                if monto_pago <= 0:
+                    messagebox.showerror("❌ Error", "El monto debe ser mayor a cero.")
+                    return
+                if monto_pago > deuda_actual:
+                    messagebox.showerror("❌ Error", "El monto ingresado es mayor a la deuda actual.")
+                    return
+                    
+                # El Double Check
+                confirmacion = messagebox.askyesno(
+                    "⚠️ Confirmar Pago", 
+                    f"¿Registrar pago de ${monto_pago:.2f}\ncon {metodo_elegido}\npara la cuenta de {alias}?"
+                )
+                if not confirmacion:
+                    return
                 
-            fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            conexion = sqlite3.connect(self.ruta_db)
-            cursor = conexion.cursor()
-            
-            # 🛡️ PARCHE: Obligamos a la base de datos a redondear a 2 decimales
-            cursor.execute("UPDATE cuentas_corrientes SET deuda_total = ROUND(deuda_total - ?, 2) WHERE alias_cliente = ?", (monto_pago, alias))
-            
-            cursor.execute("INSERT INTO ventas (fecha, total, medio_pago) VALUES (?, ?, 'EFECTIVO')", (fecha_actual, monto_pago))
-            
-            conexion.commit()
-            conexion.close()
-            
-            messagebox.showinfo("✅ Pago Registrado", f"Se descontaron ${monto_pago:.2f} de la cuenta de {alias}.\n\nEse dinero ya impactó en la Caja.")
-            
-            self.cargar_cuentas()
-            
-        except ValueError:
-            messagebox.showerror("❌ Error", "Ingrese un número válido (ej: 1500 o 1500.50).")
-        except Exception as e:
-            messagebox.showerror("❌ Error Crítico", f"Fallo al registrar el pago:\n{e}")
+                fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                conexion = sqlite3.connect(self.ruta_db)
+                cursor = conexion.cursor()
+                
+                # Descontamos la deuda en la libreta
+                cursor.execute("UPDATE cuentas_corrientes SET deuda_total = ROUND(deuda_total - ?, 2) WHERE alias_cliente = ?", (monto_pago, alias))
+                
+                # 🚀 MAGIA: Guardamos la venta inyectando el método que eligió el cajero
+                cursor.execute("INSERT INTO ventas (fecha, total, medio_pago) VALUES (?, ?, ?)", (fecha_actual, monto_pago, metodo_elegido))
+                
+                conexion.commit()
+                conexion.close()
+                
+                messagebox.showinfo("✅ Pago Registrado", f"Se descontaron ${monto_pago:.2f} abonados con {metodo_elegido}.\n\nEse dinero ya impactó en la Caja.")
+                
+                self.cargar_cuentas()
+                ventana_pago.destroy()
+                
+            except ValueError:
+                messagebox.showerror("❌ Error", "Ingrese un número válido (ej: 1500 o 1500.50).")
+            except Exception as e:
+                messagebox.showerror("❌ Error Crítico", f"Fallo al registrar el pago:\n{e}")
+
+        # 5. Botón final
+        btn_confirmar = ctk.CTkButton(ventana_pago, text="✅ Confirmar Pago", fg_color="#2FA572", hover_color="#238259", height=40, font=("Roboto", 14, "bold"), command=confirmar_pago_deuda)
+        btn_confirmar.pack(pady=25)
         
 if __name__ == "__main__":
     app = ctk.CTk()
