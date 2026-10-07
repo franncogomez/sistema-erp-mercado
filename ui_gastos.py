@@ -3,6 +3,7 @@ from tkinter import messagebox
 import sqlite3
 import os
 from datetime import datetime
+from rutas import RUTA_DB
 
 class VentanaGastos(ctk.CTkToplevel):
     def __init__(self, parent):
@@ -12,7 +13,7 @@ class VentanaGastos(ctk.CTkToplevel):
         self.geometry("450x550")
         self.grab_set()
 
-        self.ruta_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sistema_mercado.db")
+        self.ruta_db = RUTA_DB
         self.crear_tabla_gastos()
 
         # ==========================================
@@ -35,7 +36,7 @@ class VentanaGastos(ctk.CTkToplevel):
 
         self.combo_metodo = ctk.CTkComboBox(
             self, 
-            values=["Efectivo", "Transferencia / Virtual", "Mixto (Un poco y un poco)"],
+            values=["Efectivo", "Transferencia / Virtual", "Mixto (Efectivo y Transferencia)"],
             width=250,
             font=("Roboto", 14),
             state="readonly",
@@ -48,12 +49,10 @@ class VentanaGastos(ctk.CTkToplevel):
         self.frame_montos = ctk.CTkFrame(self, fg_color="transparent")
         self.frame_montos.pack(pady=20, fill="x")
 
-        # Variables para los Entry dinámicos
         self.entry_unico = None
         self.entry_mix_efec = None
         self.entry_mix_transf = None
 
-        # Dibujamos los campos por primera vez (Efectivo por defecto)
         self.actualizar_campos_monto("Efectivo")
 
         # 4. Botón Guardar
@@ -64,11 +63,10 @@ class VentanaGastos(ctk.CTkToplevel):
     # ⚙️ LÓGICA DE INTERFAZ Y BASE DE DATOS
     # ==========================================
     def actualizar_campos_monto(self, eleccion):
-        # Limpiamos el frame para dibujar lo nuevo
         for widget in self.frame_montos.winfo_children():
             widget.destroy()
 
-        if eleccion == "Mixto (Un poco y un poco)":
+        if eleccion == "Mixto (Efectivo y Transferencia)":
             lbl_mix_efec = ctk.CTkLabel(self.frame_montos, text="Monto pagado en EFECTIVO ($):", font=("Roboto", 13, "bold"), text_color="#2FA572")
             lbl_mix_efec.pack(pady=(0, 2))
             self.entry_mix_efec = ctk.CTkEntry(self.frame_montos, width=180, font=("Roboto", 16), justify="center")
@@ -79,10 +77,9 @@ class VentanaGastos(ctk.CTkToplevel):
             self.entry_mix_transf = ctk.CTkEntry(self.frame_montos, width=180, font=("Roboto", 16), justify="center")
             self.entry_mix_transf.pack(pady=(0, 5))
             
-            self.entry_unico = None # Anulamos el entry único
+            self.entry_unico = None 
             
         else:
-            # Diseño para Efectivo o Transferencia puros
             color_lbl = "#2FA572" if eleccion == "Efectivo" else "#009EE3"
             lbl_unico = ctk.CTkLabel(self.frame_montos, text=f"Monto total en {eleccion.upper()} ($):", font=("Roboto", 14, "bold"), text_color=color_lbl)
             lbl_unico.pack(pady=(10, 5))
@@ -108,7 +105,7 @@ class VentanaGastos(ctk.CTkToplevel):
             """)
             conexion.commit()
         except Exception as e:
-            print(f"Error al crear tabla de gastos: {e}")
+            messagebox.showerror("Error", f"Error al inicializar la base de datos de gastos:\n{e}")
         finally:
             if 'conexion' in locals(): conexion.close()
 
@@ -124,8 +121,7 @@ class VentanaGastos(ctk.CTkToplevel):
         transf = 0.0
 
         try:
-            # Leemos los datos dependiendo de qué pantalla esté activa
-            if metodo == "Mixto (Un poco y un poco)":
+            if metodo == "Mixto (Efectivo y Transferencia)":
                 str_efec = self.entry_mix_efec.get().replace(',', '.')
                 str_transf = self.entry_mix_transf.get().replace(',', '.')
                 if str_efec: efectivo = float(str_efec)
@@ -144,7 +140,6 @@ class VentanaGastos(ctk.CTkToplevel):
                 messagebox.showwarning("⚠️ Monto inválido", "El total del pago debe ser mayor a cero.")
                 return
 
-            # Ventana de Double Check
             mensaje = f"¿Confirmar salida de dinero por:\n'{motivo}'?\n\n"
             if efectivo > 0: mensaje += f"💵 Efectivo: ${efectivo:.2f}\n"
             if transf > 0: mensaje += f"📱 Digital: ${transf:.2f}\n"

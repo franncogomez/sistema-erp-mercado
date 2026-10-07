@@ -5,78 +5,112 @@ import sqlite3
 import os
 from tkinter import filedialog
 import pandas as pd
-
+from rutas import RUTA_DB
 
 class VentanaStock(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("📦 Gestión de Inventario")
-        self.geometry("1050x600") # Lo ensanché a 1050 para que entren cómodos todos los botones
+        self.geometry("1050x650") 
         self.grab_set()
-        self.ruta_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sistema_mercado.db")
+        self.ruta_db = RUTA_DB
 
         # ==========================================
-        # 🟢 TÍTULO Y BUSCADOR (Escáner)
+        # 🟢 TÍTULO
         # ==========================================
         self.lbl_titulo = ctk.CTkLabel(self, text="📦 Panel de Control de Stock", font=("Roboto", 24, "bold"))
-        self.lbl_titulo.pack(pady=15)
+        self.lbl_titulo.pack(pady=(15, 5))
 
-        self.frame_buscador = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_buscador.pack(pady=(0, 10))
+        # ==========================================
+        # 🔵 BARRA SUPERIOR (Filtro Dinámico, Buscador y Excel)
+        # ==========================================
+        self.frame_top = ctk.CTkFrame(self, fg_color="transparent", height=45)
+        self.frame_top.pack(pady=5, padx=20, fill="x")
+        self.frame_top.pack_propagate(False) 
 
-        self.lbl_buscar = ctk.CTkLabel(self.frame_buscador, text="🔍 Buscar / Escanear Código:", font=("Roboto", 14, "bold"))
-        self.lbl_buscar.pack(side="left", padx=10)
+        # 1. Filtro de Stock Crítico Personalizable (Switch + Entry)
+        self.frame_critico = ctk.CTkFrame(self.frame_top, fg_color="transparent")
+        self.frame_critico.place(relx=0.0, rely=0.5, anchor="w")
 
-        self.entry_buscador = ctk.CTkEntry(self.frame_buscador, width=250, placeholder_text="Pase el producto aquí...")
-        self.entry_buscador.pack(side="left", padx=10)
+        self.filtro_reponer_var = ctk.BooleanVar(value=False)
+        self.switch_reponer = ctk.CTkSwitch(
+            self.frame_critico, 
+            text="⚠️ Stock Crítico ≤", 
+            font=("Roboto", 13, "bold"), 
+            text_color="#EF4444", 
+            variable=self.filtro_reponer_var, 
+            command=self.aplicar_filtro
+        )
+        self.switch_reponer.pack(side="left")
+
+        self.entry_umbral = ctk.CTkEntry(self.frame_critico, width=45, font=("Roboto", 13, "bold"), justify="center", text_color="#EF4444")
+        self.entry_umbral.insert(0, "5")
+        self.entry_umbral.pack(side="left", padx=(5, 0))
+        self.entry_umbral.bind("<Return>", lambda e: self.aplicar_filtro())
+
+        # 2. Buscador (Centrado absoluto)
+        self.frame_buscador = ctk.CTkFrame(self.frame_top, fg_color="transparent")
+        self.frame_buscador.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.lbl_buscar = ctk.CTkLabel(self.frame_buscador, text="🔍 Buscar:", font=("Roboto", 14, "bold"))
+        self.lbl_buscar.pack(side="left", padx=5)
+
+        self.combo_filtro_busqueda = ctk.CTkOptionMenu(
+            self.frame_buscador, 
+            values=["Búsqueda Global", "Solo Nombre", "Solo Marca", "Solo Código"],
+            width=140,
+            font=("Roboto", 13)
+        )
+        self.combo_filtro_busqueda.pack(side="left", padx=(0, 5))
+
+        self.entry_buscador = ctk.CTkEntry(self.frame_buscador, width=220, placeholder_text="Escriba aquí...")
+        self.entry_buscador.pack(side="left", padx=5)
         self.entry_buscador.focus() 
-        
         self.entry_buscador.bind("<Return>", self.buscar_producto)
         
-        self.btn_limpiar = ctk.CTkButton(self.frame_buscador, text="❌ Limpiar", width=80, fg_color="#C62828", hover_color="#8e1d1d", command=self.cargar_datos)
-        self.btn_limpiar.pack(side="left", padx=10)
+        self.btn_limpiar = ctk.CTkButton(self.frame_buscador, text="❌ Limpiar", width=70, height=35, fg_color="#C62828", hover_color="#8e1d1d", command=self.limpiar_busqueda)
+        self.btn_limpiar.pack(side="left", padx=5)
+
+        # 3. Inyectar Excel (Anclado a la derecha)
+        self.btn_importar = ctk.CTkButton(self.frame_top, text="📥 Inyectar Excel", fg_color="#4A148C", hover_color="#311B92", height=35, font=("Roboto", 14, "bold"), command=self.importar_excel)
+        self.btn_importar.place(relx=1.0, rely=0.5, anchor="e")
 
         # ==========================================
-        # 🔵 MARCO DE ACCIONES (AHORA CON SCROLL HORIZONTAL)
+        # 🟣 BARRA DE HERRAMIENTAS
         # ==========================================
-        # 🪄 Acá está la magia: CTkScrollableFrame con orientation="horizontal"
-        self.frame_acciones = ctk.CTkScrollableFrame(self, orientation="horizontal", height=65, fg_color="transparent")
+        self.frame_acciones = ctk.CTkScrollableFrame(self, orientation="horizontal", height=60, fg_color="transparent")
         self.frame_acciones.pack(pady=10, padx=20, fill="x")
 
-        # Todos tus botones adentro del scroll (sin cambiar sus funciones)
-        self.btn_corregir = ctk.CTkButton(self.frame_acciones, text="✏️ Corregir Stock", fg_color="#D97706", hover_color="#b36205", height=40, font=("Roboto", 14, "bold"), command=self.corregir_stock)
-        self.btn_corregir.pack(side="left", padx=5)
+        self.btn_corregir = ctk.CTkButton(self.frame_acciones, text="✏️ Corregir Stock", fg_color="#D97706", hover_color="#b36205", height=40, font=("Roboto", 13, "bold"), command=self.corregir_stock)
+        self.btn_corregir.pack(side="left", padx=8)
         
-        self.btn_editar_nombre = ctk.CTkButton(self.frame_acciones, text="📝 Editar Nombre", fg_color="#1E88E5", hover_color="#1565C0", height=40, font=("Roboto", 14, "bold"), command=self.editar_nombre)
-        self.btn_editar_nombre.pack(side="left", padx=5)
+        self.btn_editar_nombre = ctk.CTkButton(self.frame_acciones, text="📝 Editar Nombre", fg_color="#1E88E5", hover_color="#1565C0", height=40, font=("Roboto", 13, "bold"), command=self.editar_nombre)
+        self.btn_editar_nombre.pack(side="left", padx=8)
 
-        self.btn_editar_precio = ctk.CTkButton(self.frame_acciones, text="💲 Editar Precio", fg_color="#43A047", hover_color="#2E7D32", height=40, font=("Roboto", 14, "bold"), command=self.editar_precio)
-        self.btn_editar_precio.pack(side="left", padx=5)
+        self.btn_editar_precio = ctk.CTkButton(self.frame_acciones, text="💲 Editar Precio", fg_color="#43A047", hover_color="#2E7D32", height=40, font=("Roboto", 13, "bold"), command=self.editar_precio)
+        self.btn_editar_precio.pack(side="left", padx=8)
 
-        self.btn_nuevo_suelto = ctk.CTkButton(self.frame_acciones, text="➕ Nuevo Suelto", fg_color="#2FA572", hover_color="#237a54", height=40, font=("Roboto", 14, "bold"), command=self.crear_producto_suelto)
-        self.btn_nuevo_suelto.pack(side="left", padx=5)
+        self.btn_nuevo_suelto = ctk.CTkButton(self.frame_acciones, text="➕ Nuevo Pesable", fg_color="#2FA572", hover_color="#237a54", height=40, font=("Roboto", 13, "bold"), command=self.crear_producto_suelto)
+        self.btn_nuevo_suelto.pack(side="left", padx=8)
 
-        self.btn_actualizar = ctk.CTkButton(self.frame_acciones, text="🔄 Actualizar", height=40, font=("Roboto", 14), command=self.cargar_datos)
-        self.btn_actualizar.pack(side="left", padx=5)
+        self.btn_add_lista = ctk.CTkButton(self.frame_acciones, text="🛒 A la Lista", fg_color="#F59E0B", hover_color="#D97706", height=40, font=("Roboto", 13, "bold"), command=self.añadir_a_lista)
+        self.btn_add_lista.pack(side="left", padx=8) 
 
-        self.btn_eliminar = ctk.CTkButton(self.frame_acciones, text="🗑️ Eliminar", fg_color="#C62828", hover_color="#8e1d1d", height=40, font=("Roboto", 14, "bold"), command=self.eliminar_producto)
-        self.btn_eliminar.pack(side="left", padx=5)
+        self.btn_ver_lista = ctk.CTkButton(self.frame_acciones, text="📝 Abrir Anotador", fg_color="#8E24AA", hover_color="#6A1B9A", height=40, font=("Roboto", 13, "bold"), command=self.abrir_anotador)
+        self.btn_ver_lista.pack(side="left", padx=8)
 
-        self.btn_importar = ctk.CTkButton(self.frame_acciones, text="📥 Inyectar Excel", fg_color="#4A148C", hover_color="#311B92", height=40, font=("Roboto", 14, "bold"), command=self.importar_excel)
-        self.btn_importar.pack(side="left", padx=5)
+        # 🛠️ NUEVO BOTÓN: Imprimir Etiquetas
+        self.btn_imprimir_etiquetas = ctk.CTkButton(self.frame_acciones, text="🖨️ Imprimir Etiquetas", fg_color="#00ACC1", hover_color="#00838F", height=40, font=("Roboto", 13, "bold"), command=self.imprimir_etiquetas)
+        self.btn_imprimir_etiquetas.pack(side="left", padx=8)
 
-        # Tus botones nuevos del anotador ya integrados al scroll
-        self.btn_add_lista = ctk.CTkButton(self.frame_acciones, text="🛒 A la Lista", fg_color="#F59E0B", hover_color="#D97706", height=40, font=("Roboto", 14, "bold"), command=self.añadir_a_lista)
-        self.btn_add_lista.pack(side="left", padx=5)
-
-        self.btn_ver_lista = ctk.CTkButton(self.frame_acciones, text="📝 Abrir Anotador", fg_color="#8E24AA", hover_color="#6A1B9A", height=40, font=("Roboto", 14, "bold"), command=self.abrir_anotador)
-        self.btn_ver_lista.pack(side="left", padx=5)
+        self.btn_eliminar = ctk.CTkButton(self.frame_acciones, text="🗑️ Eliminar", width=100, fg_color="#C62828", hover_color="#8e1d1d", height=40, font=("Roboto", 13, "bold"), command=self.eliminar_producto)
+        self.btn_eliminar.pack(side="left", padx=8)
 
         # ==========================================
-        # 🟡 LA TABLA DE INVENTARIO (Treeview)
+        # 🟡 LA TABLA DE INVENTARIO CON SCROLLBAR
         # ==========================================
         self.frame_tabla = ctk.CTkFrame(self)
-        self.frame_tabla.pack(padx=20, pady=10, fill="both", expand=True)
+        self.frame_tabla.pack(side="top", padx=20, pady=(5, 15), fill="both", expand=True)
 
         style = ttk.Style()
         style.theme_use("default")
@@ -101,23 +135,254 @@ class VentanaStock(ctk.CTkToplevel):
         self.tabla.column("precio", width=90, anchor="center")
         self.tabla.column("stock", width=90, anchor="center")
 
-        self.tabla.tag_configure("sin_stock", foreground="#ff5252")
-
-        self.tabla.pack(fill="both", expand=True, padx=5, pady=5)
+        self.tabla.tag_configure("sin_stock", foreground="#EF4444")
+        
+        self.scrollbar = ttk.Scrollbar(self.frame_tabla, orient="vertical", command=self.tabla.yview)
+        self.tabla.configure(yscrollcommand=self.scrollbar.set)
+        
+        self.tabla.pack(side="left", fill="both", expand=True, padx=(5, 0), pady=5)
+        self.scrollbar.pack(side="right", fill="y", padx=(0, 5), pady=5)
 
         self.cargar_datos()
 
     # ==========================================
-    # ⚙️ FUNCIONES DE LA BASE DE DATOS
+    # ⚙️ FUNCIONES DE LA BASE DE DATOS Y FILTROS
     # ==========================================
+    def obtener_umbral(self):
+        try:
+            val = int(self.entry_umbral.get().strip())
+            return val if val >= 0 else 5
+        except ValueError:
+            return 5
 
-    def añadir_a_lista(self):
-        import os
-        from tkinter import messagebox
+    def limpiar_busqueda(self):
+        self.entry_buscador.delete(0, 'end')
+        self.cargar_datos()
+
+    def aplicar_filtro(self):
+        if self.entry_buscador.get().strip():
+            self.buscar_producto()
+        else:
+            self.cargar_datos()
+
+    def procesar_fila_tabla(self, codigo, nombre, marca, rubro, precio, stock):
+        umbral = self.obtener_umbral()
+        try:
+            stock_num = int(float(stock)) if stock else 0
+        except:
+            stock_num = 0
+            
+        if len(str(codigo)) <= 4:
+            stock_mostrar = "Pesable"
+            etiqueta = () 
+        else:
+            stock_mostrar = f"{stock_num} ⚠️" if stock_num <= umbral else str(stock_num)
+            etiqueta = ("sin_stock",) if stock_num <= umbral else ()
+            
+        self.tabla.insert("", "end", values=(codigo, nombre, marca, rubro, f"${precio:.2f}", stock_mostrar), tags=etiqueta)
+
+    def cargar_datos(self):
+        for item in self.tabla.get_children(): self.tabla.delete(item)
         
+        try:
+            conexion = sqlite3.connect(self.ruta_db)
+            cursor = conexion.cursor()
+            
+            query = "SELECT codigo_barras, nombre, marca, cat1, precio, stock FROM productos"
+            
+            if self.filtro_reponer_var.get():
+                umbral = self.obtener_umbral()
+                query += f" WHERE CAST(stock AS INTEGER) <= {umbral} AND LENGTH(codigo_barras) > 4"
+                
+            query += " ORDER BY (precio = 0 AND LENGTH(codigo_barras) <= 4) DESC, nombre ASC LIMIT 150"
+            
+            cursor.execute(query)
+            productos = cursor.fetchall()
+
+            for p in productos:
+                self.procesar_fila_tabla(*p)
+
+        except Exception as e:
+            messagebox.showerror("❌ Error", f"Error al cargar la base de datos:\n{e}")
+        finally:
+            if 'conexion' in locals(): conexion.close()
+
+    def buscar_producto(self, event=None):
+        codigo_buscado = self.entry_buscador.get().strip()
+        if not codigo_buscado:
+            self.cargar_datos()
+            return
+
+        for item in self.tabla.get_children(): self.tabla.delete(item)
+            
+        try:
+            conexion = sqlite3.connect(self.ruta_db)
+            cursor = conexion.cursor()
+            
+            palabras = codigo_buscado.split()
+            query = "SELECT codigo_barras, nombre, marca, cat1, precio, stock FROM productos WHERE 1=1"
+            parametros = []
+            
+            tipo_busqueda = self.combo_filtro_busqueda.get()
+
+            if self.filtro_reponer_var.get():
+                umbral = self.obtener_umbral()
+                query += f" AND CAST(stock AS INTEGER) <= {umbral} AND LENGTH(codigo_barras) > 4"
+
+            for palabra in palabras:
+                param = f"%{palabra}%"
+                if tipo_busqueda == "Búsqueda Global":
+                    query += " AND (codigo_barras LIKE ? OR nombre LIKE ? OR marca LIKE ? OR cat1 LIKE ?)"
+                    parametros.extend([param, param, param, param])
+                elif tipo_busqueda == "Solo Nombre":
+                    query += " AND nombre LIKE ?"
+                    parametros.append(param)
+                elif tipo_busqueda == "Solo Marca":
+                    query += " AND marca LIKE ?"
+                    parametros.append(param)
+                elif tipo_busqueda == "Solo Código":
+                    query += " AND codigo_barras LIKE ?"
+                    parametros.append(param)
+                
+            query += " ORDER BY (precio = 0 AND LENGTH(codigo_barras) <= 4) DESC, nombre ASC LIMIT 100"
+            
+            cursor.execute(query, parametros)
+            productos = cursor.fetchall()
+
+            if productos:
+                for p in productos:
+                    self.procesar_fila_tabla(*p)
+                self.tabla.selection_set(self.tabla.get_children()[0])
+            else:
+                messagebox.showinfo("🔍 Búsqueda", f"No se encontraron productos coincidentes.")
+                self.cargar_datos()
+
+        except Exception as e:
+            messagebox.showerror("❌ Error", f"Error en la búsqueda:\n{e}")
+        finally:
+            if 'conexion' in locals(): conexion.close()
+            self.entry_buscador.focus()
+
+    # ==========================================
+    # 🖨️ IMPRESIÓN DE ETIQUETAS DE GÓNDOLA (Térmica)
+    # ==========================================
+    # ==========================================
+    # 🖨️ IMPRESIÓN DE ETIQUETAS MULTIFORMATO
+    # ==========================================
+    def imprimir_etiquetas(self):
         seleccion = self.tabla.selection()
-        if not seleccion:
-            messagebox.showwarning("⚠️️ Atención", "Seleccioná uno o varios productos de la tabla (usá Ctrl + Clic para elegir varios).")
+        items_a_procesar = seleccion if seleccion else self.tabla.get_children()
+        
+        if not items_a_procesar:
+            messagebox.showwarning("⚠ Vacío", "No hay productos en la tabla para imprimir.")
+            return
+            
+        if seleccion:
+            mensaje = f"Se imprimirán {len(seleccion)} productos seleccionados."
+        else:
+            mensaje = f"Se imprimirán TODOS los {len(items_a_procesar)} productos filtrados."
+            
+        popup = ctk.CTkToplevel(self)
+        popup.title("🖨️ Formato de Impresión")
+        popup.geometry("450x380")
+        popup.resizable(False, False)
+        popup.grab_set()
+        popup.attributes("-topmost", True)
+
+        ctk.CTkLabel(popup, text="Configuración de Etiquetas", font=("Roboto", 20, "bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(popup, text=mensaje, font=("Roboto", 14), text_color="#1E88E5").pack(pady=(0, 20))
+
+        formato_var = ctk.StringVar(value="termica")
+
+        ctk.CTkRadioButton(popup, text="🧾 Impresora Térmica (Tickeadora 58mm/80mm)", variable=formato_var, value="termica", font=("Roboto", 14)).pack(anchor="w", padx=40, pady=10)
+        ctk.CTkRadioButton(popup, text="🏷️ Impresora Zebra / Rollo Etiquetador", variable=formato_var, value="zebra", font=("Roboto", 14)).pack(anchor="w", padx=40, pady=10)
+        ctk.CTkRadioButton(popup, text="📄 Hojas A4 (Impresora Láser o Tinta)", variable=formato_var, value="a4", font=("Roboto", 14)).pack(anchor="w", padx=40, pady=10)
+
+        def procesar():
+            formato = formato_var.get()
+            popup.destroy()
+            self.generar_archivo_etiquetas(items_a_procesar, formato)
+
+        ctk.CTkButton(popup, text="✅ Generar Etiquetas", command=procesar, fg_color="#2FA572", hover_color="#238259", height=45, font=("Roboto", 15, "bold")).pack(pady=25)
+
+    def generar_archivo_etiquetas(self, items, formato):
+        import tempfile
+        import textwrap
+        import webbrowser
+
+        # Plantilla CSS para hoja A4 (Cuadrícula de 4 columnas)
+        html_a4 = """<html><head><meta charset="utf-8"><style>
+            @page { size: A4; margin: 10mm; }
+            body { font-family: Arial, sans-serif; background: #fff; color: #000; }
+            .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+            .label { border: 1px dashed #aaa; padding: 10px; text-align: center; height: 110px; display: flex; flex-direction: column; justify-content: center; }
+            .nombre { font-size: 12px; font-weight: bold; max-height: 35px; overflow: hidden; }
+            .precio { font-size: 26px; font-weight: bold; margin: 5px 0; }
+            .codigo { font-size: 10px; color: #444; }
+        </style></head><body><div class="grid">"""
+
+        # Plantilla CSS para Zebra (Etiqueta individual estándar de 60x40mm)
+        html_zebra = """<html><head><meta charset="utf-8"><style>
+            @page { size: 60mm 40mm; margin: 2mm; }
+            body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #fff; color: #000; }
+            .label { width: 100%; height: 100%; text-align: center; display: flex; flex-direction: column; justify-content: center; align-items: center; page-break-after: always; }
+            .nombre { font-size: 14px; font-weight: bold; max-height: 40px; overflow: hidden; width: 95%; line-height: 1.1; }
+            .precio { font-size: 34px; font-weight: bold; margin: 3px 0; }
+            .codigo { font-size: 12px; }
+        </style></head><body>"""
+
+        ticket_termico = "\n"
+
+        for item in items:
+            valores = self.tabla.item(item)['values']
+            codigo = str(valores[0])
+            nombre = str(valores[1]).upper()
+            precio = str(valores[4]).replace("$", "").strip()
+
+            if formato == "a4":
+                html_a4 += f"<div class='label'><div class='nombre'>{nombre}</div><div class='precio'>${precio}</div><div class='codigo'>Cod: {codigo}</div></div>"
+            elif formato == "zebra":
+                html_zebra += f"<div class='label'><div class='nombre'>{nombre}</div><div class='precio'>${precio}</div><div class='codigo'>Cod: {codigo}</div></div>"
+            else:
+                ticket_termico += "-" * 32 + "\n\n"
+                for linea in textwrap.wrap(nombre, 32): ticket_termico += f"{linea.center(32)}\n"
+                ticket_termico += "\n" + f"$ {precio}".center(32) + "\n\n"
+                ticket_termico += f"Cod: {codigo}".center(32) + "\n\n" + "-" * 32 + "\n\n\n\n"
+
+        html_a4 += "</div><script>window.onload = function() { window.print(); }</script></body></html>"
+        html_zebra += "<script>window.onload = function() { window.print(); }</script></body></html>"
+
+        try:
+            if formato == "termica":
+                fd, ruta = tempfile.mkstemp(suffix=".txt")
+                with os.fdopen(fd, 'w', encoding='utf-8') as f: f.write(ticket_termico)
+                os.startfile(ruta, "print")
+            else:
+                contenido = html_a4 if formato == "a4" else html_zebra
+                fd, ruta = tempfile.mkstemp(suffix=".html")
+                with os.fdopen(fd, 'w', encoding='utf-8') as f: f.write(contenido)
+                import webbrowser
+                webbrowser.open(f"file://{ruta}")
+        except Exception as e:
+            messagebox.showerror("❌ Error", f"Fallo al generar archivo:\n{e}")
+
+    # ==========================================
+    # 🛒 AÑADIR A LISTA INTELIGENTE
+    # ==========================================
+    def añadir_a_lista(self):
+        seleccion = self.tabla.selection()
+        items_a_procesar = seleccion if seleccion else self.tabla.get_children()
+        
+        if not items_a_procesar:
+            messagebox.showwarning("⚠ Vacío", "No hay productos en la tabla para agregar.")
+            return
+            
+        if seleccion:
+            mensaje = f"¿Desea agregar los {len(seleccion)} productos seleccionados a la lista de compras?"
+        else:
+            mensaje = f"No ha seleccionado productos específicos.\n\n¿Desea agregar TODOS los {len(items_a_procesar)} productos que se muestran en la tabla a la lista de compras?"
+            
+        if not messagebox.askyesno("🛒 Confirmar Acción", mensaje):
             return
         
         ruta_txt = os.path.join(os.path.dirname(self.ruta_db), "lista_compras.txt")
@@ -125,7 +390,7 @@ class VentanaStock(ctk.CTkToplevel):
         
         try:
             with open(ruta_txt, "a", encoding="utf-8") as f:
-                for item in seleccion:
+                for item in items_a_procesar:
                     valores = self.tabla.item(item)['values']
                     nombre = valores[1]
                     f.write(f"- {nombre}\n")
@@ -138,10 +403,6 @@ class VentanaStock(ctk.CTkToplevel):
             messagebox.showerror("Error", f"Fallo al guardar: {e}")
 
     def abrir_anotador(self):
-        import customtkinter as ctk
-        import os
-        from tkinter import messagebox
-        
         ventana_notas = ctk.CTkToplevel(self)
         ventana_notas.title("📝 Anotador de Faltantes")
         ventana_notas.geometry("450x550")
@@ -150,19 +411,16 @@ class VentanaStock(ctk.CTkToplevel):
         lbl = ctk.CTkLabel(ventana_notas, text="Lista de Compras / Pendientes", font=("Roboto", 18, "bold"))
         lbl.pack(pady=15)
 
-        # La caja de texto editable
         caja_texto = ctk.CTkTextbox(ventana_notas, width=400, height=400, font=("Roboto", 16))
         caja_texto.pack(pady=5)
 
         ruta_txt = os.path.join(os.path.dirname(self.ruta_db), "lista_compras.txt")
         
-        # Cargamos lo que ya estaba anotado
         if os.path.exists(ruta_txt):
             with open(ruta_txt, "r", encoding="utf-8") as f:
                 caja_texto.insert("1.0", f.read())
 
         def guardar_notas():
-            # Guardamos lo que el usuario editó o borró
             with open(ruta_txt, "w", encoding="utf-8") as f:
                 f.write(caja_texto.get("1.0", "end-1c"))
                 
@@ -174,7 +432,6 @@ class VentanaStock(ctk.CTkToplevel):
         btn_guardar.pack(pady=15)
 
     def crear_producto_suelto(self):
-        # 🚀 Función exclusiva para crear fiambre, verdura y panadería rapidísimo
         dialogo_cod = ctk.CTkInputDialog(text="Ingrese un CÓDIGO CORTO (Ej: 1 para Pan, 2 para Tomate):", title="➕ Nuevo Pesable")
         codigo = dialogo_cod.get_input()
         if not codigo or not codigo.strip(): return
@@ -209,8 +466,7 @@ class VentanaStock(ctk.CTkToplevel):
         except Exception as e:
             messagebox.showerror("❌ Error", f"Ocurrió un error: {e}")
         finally:
-            if 'conexion' in locals():
-                conexion.close()
+            if 'conexion' in locals(): conexion.close()
 
     def importar_excel(self):
         archivo = filedialog.askopenfilename(
@@ -357,76 +613,6 @@ class VentanaStock(ctk.CTkToplevel):
             finally:
                 if 'conexion' in locals(): conexion.close()
     
-    def buscar_producto(self, event=None):
-        codigo_buscado = self.entry_buscador.get().strip()
-        if not codigo_buscado:
-            self.cargar_datos()
-            return
-
-        for item in self.tabla.get_children(): self.tabla.delete(item)
-            
-        try:
-            conexion = sqlite3.connect(self.ruta_db)
-            cursor = conexion.cursor()
-            
-            palabras = codigo_buscado.split()
-            query = "SELECT codigo_barras, nombre, marca, cat1, precio, stock FROM productos WHERE 1=1"
-            parametros = []
-
-            for palabra in palabras:
-                query += " AND (codigo_barras LIKE ? OR nombre LIKE ? OR marca LIKE ? OR cat1 LIKE ?)"
-                param = f"%{palabra}%"
-                parametros.extend([param, param, param, param])
-                
-            query += " ORDER BY (precio = 0 AND LENGTH(codigo_barras) <= 4) DESC, nombre ASC LIMIT 100"
-            
-            cursor.execute(query, parametros)
-            productos = cursor.fetchall()
-
-            if productos:
-                for p in productos:
-                    codigo, nombre, marca, rubro, precio, stock = p
-                    stock_mostrar = f"{stock} ⚠" if stock <= 0 else str(stock)
-                    etiqueta = ("sin_stock",) if stock <= 0 else ()
-                    self.tabla.insert("", "end", values=(codigo, nombre, marca, rubro, f"${precio:.2f}", stock_mostrar), tags=etiqueta)
-                    
-                self.tabla.selection_set(self.tabla.get_children()[0])
-            else:
-                messagebox.showinfo("🔍 Búsqueda", f"No se encontraron productos con: {codigo_buscado}")
-                self.cargar_datos()
-
-        except Exception as e:
-            messagebox.showerror("❌ Error", f"Error en la búsqueda:\n{e}")
-        finally:
-            if 'conexion' in locals(): conexion.close()
-            self.entry_buscador.focus()
-
-    def cargar_datos(self):
-        for item in self.tabla.get_children(): self.tabla.delete(item)
-        self.entry_buscador.delete(0, 'end')    
-        
-        try:
-            conexion = sqlite3.connect(self.ruta_db)
-            cursor = conexion.cursor()
-            
-            cursor.execute("SELECT codigo_barras, nombre, marca, cat1, precio, stock FROM productos ORDER BY (precio = 0 AND LENGTH(codigo_barras) <= 4) DESC, nombre ASC LIMIT 100")
-            productos = cursor.fetchall()
-
-            for p in productos:
-                codigo, nombre, marca, rubro, precio, stock = p
-                if len(str(codigo)) <= 4:
-                    stock_mostrar = "Pesable"
-                    etiqueta = () 
-                else:
-                    stock_mostrar = f"{stock} ⚠️" if stock <= 0 else str(stock)
-                    etiqueta = ("sin_stock",) if stock <= 0 else ()
-                self.tabla.insert("", "end", values=(codigo, nombre, marca, rubro, f"${precio:.2f}", stock_mostrar), tags=etiqueta)
-
-        except Exception as e:
-            messagebox.showerror("❌ Error", f"Error al cargar la base de datos:\n{e}")
-        finally:
-            if 'conexion' in locals(): conexion.close()
-
     def editar_nombre(self):
         producto = self.obtener_seleccionado()
         if not producto: return

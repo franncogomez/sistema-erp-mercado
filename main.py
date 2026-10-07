@@ -9,17 +9,12 @@ import socket
 import threading
 import uvicorn
 import qrcode
-import sqlite3
-import uvicorn
-import socket
-import uuid
-from PIL import Image
-from fastapi import FastAPI
+import shutil
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 from tkinter import messagebox
 from datetime import datetime, timedelta
 from supabase import create_client, Client
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 
 # 🔗 IMPORTAMOS los MÓDULOS DE INTERFAZ
@@ -32,31 +27,70 @@ from ui_libreta import VentanaLibreta
 from ui_estadisticas import VentanaEstadisticas
 
 # ==========================================
+# 🪄 FÓRMULA MÁGICA DE RUTAS
+# ==========================================
+def obtener_ruta_db():
+    if getattr(sys, 'frozen', False):
+        directorio_base = os.path.dirname(sys.executable)
+    else:
+        directorio_base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(directorio_base, "sistema_mercado.db")
+
+# ==========================================
+# 🛠️ MIGRACIONES AUTOMÁTICAS Y ROLES
+# ==========================================
+def inicializar_base_datos():
+    ruta_db = obtener_ruta_db()
+    conexion = sqlite3.connect(ruta_db)
+    cursor = conexion.cursor()
+    
+    # Tabla de Configuración
+    cursor.execute('''CREATE TABLE IF NOT EXISTS config_local (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        razon_social TEXT, nombre_fantasia TEXT, cuit TEXT, direccion TEXT, 
+        telefono TEXT, instagram TEXT, condicion_iva TEXT, iibb TEXT, inicio_actividades TEXT
+    )''')
+    try: cursor.execute("ALTER TABLE config_local ADD COLUMN instagram TEXT")
+    except: pass 
+    
+    # 🛡️ Tabla de Usuarios y Roles
+    cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios (
+        id_usuario INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT UNIQUE,
+        pin TEXT,
+        rol TEXT
+    )''')
+    
+    # Si no hay usuarios (instalación nueva), creamos los 2 por defecto
+    cursor.execute("SELECT COUNT(*) FROM usuarios")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO usuarios (nombre, pin, rol) VALUES ('ADMIN (Dueño)', '1234', 'ADMINISTRADOR')")
+        cursor.execute("INSERT INTO usuarios (nombre, pin, rol) VALUES ('CAJA 1 (Empleado)', '0000', 'CAJERO')")
+        
+    conexion.commit()
+    conexion.close()
+
+# ==========================================
 #  MÓDULO DE VALIDACIÓN (Supabase)
 # ==========================================
-
-load_dotenv() 
+ruta_base = os.path.dirname(obtener_ruta_db())
+load_dotenv(os.path.join(ruta_base, ".env"))
 URL_NUBE = os.getenv("SUPABASE_URL")
 LLAVE_API = os.getenv("SUPABASE_KEY")
 
 def gestionar_licencia_local(nueva_fecha=None):
-    """Guarda la fecha de la nube en la PC, o la lee si no hay internet."""
-    ruta_base = os.path.dirname(os.path.abspath(__file__))
-    ruta_db = os.path.join(ruta_base, "sistema_mercado.db")
+    ruta_db = obtener_ruta_db()
     conexion = sqlite3.connect(ruta_db)
     cursor = conexion.cursor()
     
-    # 1. Nos aseguramos de que exista una tabla exclusiva para la licencia
     cursor.execute('''CREATE TABLE IF NOT EXISTS licencia_local (id INTEGER PRIMARY KEY, vencimiento TEXT)''')
     
     if nueva_fecha:
-        # 2. Si hay internet y bajamos una fecha nueva, pisamos la vieja y guardamos
         cursor.execute("DELETE FROM licencia_local")
         cursor.execute("INSERT INTO licencia_local (vencimiento) VALUES (?)", (nueva_fecha,))
         conexion.commit()
         resultado = nueva_fecha
     else:
-        # 3. Si no hay internet, rescatamos la última fecha guardada
         cursor.execute("SELECT vencimiento FROM licencia_local LIMIT 1")
         fila = cursor.fetchone()
         resultado = fila[0] if fila else None
@@ -67,20 +101,17 @@ def gestionar_licencia_local(nueva_fecha=None):
 def obtener_id_hardware():
     import winreg
     try:
-        # Leemos el ID único e inmutable de la instalación de Windows
         registry = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
         key = winreg.OpenKey(registry, r"SOFTWARE\Microsoft\Cryptography")
         machine_guid, _ = winreg.QueryValueEx(key, "MachineGuid")
         winreg.CloseKey(key)
         return machine_guid
     except Exception:
-        # Plan B de emergencia (si falla el registro, usamos la placa madre)
         import subprocess
         return subprocess.check_output('wmic csproduct get uuid').decode().split('\n')[1].strip()
 
 def verificar_licencia_nube():
     id_pc = str(obtener_id_hardware()) 
-    
     fecha_evaluar = None
     origen_dato = "NUBE ☁️"
     
@@ -91,7 +122,6 @@ def verificar_licencia_nube():
         
         if len(respuesta.data) > 0:
             fecha_evaluar = respuesta.data[0]["fecha_vencimiento"]
-            # ¡Inyección silenciosa! Guardamos esta fecha en SQLite para uso offline
             gestionar_licencia_local(fecha_evaluar)
         else:
             mensaje = (
@@ -104,7 +134,6 @@ def verificar_licencia_nube():
             
     except Exception as e:
         print("⚠️ Sin internet. Buscando licencia de respaldo en la base de datos local...")
-        # Si Supabase falla por falta de internet, pedimos la fecha local
         fecha_evaluar = gestionar_licencia_local()
         origen_dato = "LOCAL (Offline) 💾"
         
@@ -112,58 +141,30 @@ def verificar_licencia_nube():
         print("🛑 Error crítico: No hay licencias registradas ni en la nube ni localmente.")
         return False
         
-    # --- LÓGICA DE TIEMPOS Y MENSAJES ---
-    # Usamos .date() para comparar días exactos sin que importe la hora del reloj
     hoy = datetime.now().date()
     vencimiento_dt = datetime.strptime(fecha_evaluar, "%Y-%m-%d").date()
-    
     dias_restantes = (vencimiento_dt - hoy).days
-    fecha_corte_definitivo = vencimiento_dt + timedelta(days=2) # 48 hs de gracia
+    fecha_corte_definitivo = vencimiento_dt + timedelta(days=2) 
     
     print(f"✅ Licencia cargada desde {origen_dato} | Vence: {fecha_evaluar}")
     
-    # CASO A: Faltan más de 5 días (Entra directo sin molestar)
     if dias_restantes > 5:
         return True
-        
-    # CASO B: Faltan entre 0 y 5 días (Aviso súper empático)
     elif 0 <= dias_restantes <= 5:
-        mensaje = (
-            f"¡Hola! 👋 Te recuerdo que tu suscripción vence en {dias_restantes} días "
-            f"(el {fecha_evaluar}).\n\n"
-            f"Para evitar interrupciones, te sugerimos renovar antes de la fecha de vencimiento.\n\n"
-            f"Si ya realizaste el pago, ¡gracias! Tu suscripción se actualizará automáticamente en la nube."
-        )
-        messagebox.showinfo("Aviso de Suscripción", mensaje)
+        messagebox.showinfo("Aviso de Suscripción", f"¡Hola! 👋 Te recuerdo que tu suscripción vence en {dias_restantes} días ({fecha_evaluar}).")
         return True
-        
-    # CASO C: Ya venció, pero estamos en los 2 días de gracia (Aviso firme y transparente)
     elif hoy > vencimiento_dt and hoy <= fecha_corte_definitivo:
-        mensaje_gracia = (
-            f"⚠ Tu suscripción venció el {fecha_evaluar}.\n\n"
-            f"Se ha activado una extensión de cortesía por 48 hs. El sistema se bloqueará "
-            f"completamente el {fecha_corte_definitivo.strftime('%Y-%m-%d')}.\n\n"
-            f"Por favor, regularizá el pago a la brevedad para no interrumpir tus ventas."
-        )
-        messagebox.showwarning("Atención - Período de Gracia", mensaje_gracia)
+        messagebox.showwarning("Atención - Período de Gracia", f"⚠ Tu suscripción venció el {fecha_evaluar}.\nTenes 48hs de gracia.")
         return True
-        
-    # CASO D: Pasó la fecha de gracia (Bloqueo total)
     elif hoy > fecha_corte_definitivo:
-        messagebox.showerror(
-            "Sistema Bloqueado", 
-            f"🛑 El período de gracia finalizó el {fecha_corte_definitivo.strftime('%Y-%m-%d')}.\n\n"
-            f"El sistema se encuentra bloqueado por falta de pago. Por favor, comunicate con soporte para reactivarlo."
-        )
+        messagebox.showerror("Sistema Bloqueado", "🛑 El período de gracia finalizó. Sistema bloqueado por falta de pago.")
         return False
 
-
 # ==========================================
-# 📡 1. MOTOR DEL SERVIDOR MÓVIL (FASTAPI)
+# 📡 MOTOR DEL SERVIDOR MÓVIL (FASTAPI)
 # ==========================================
 api = FastAPI()
 
-# 📱 1.1 INTERFAZ WEB HTML/CSS/JS (Se envía al celular)
 @api.get("/", response_class=HTMLResponse)
 def panel_movil():
     html_content = """
@@ -189,7 +190,6 @@ def panel_movil():
     </head>
     <body>
         <h2>📦 Buscador por Código</h2>
-        <!-- Modificado para que sea teclado numérico en el celular -->
         <input type="number" id="buscador" placeholder="Últimos números del código..." onkeyup="buscar()">
         <div id="resultados"></div>
 
@@ -232,46 +232,30 @@ def panel_movil():
     """
     return html_content
 
-# 🔍 1.2 RUTA PARA BUSCAR PRODUCTOS EN LA BASE DE DATOS
 @api.get("/api/buscar/{query}")
 def buscar_producto(query: str):
-    ruta_base = os.path.dirname(os.path.abspath(__file__))
-    ruta_db = os.path.join(ruta_base, "sistema_mercado.db")
-    
+    ruta_db = obtener_ruta_db()
     conexion = sqlite3.connect(ruta_db, check_same_thread=False)
     cursor = conexion.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;")
-    
     cursor.execute("SELECT codigo_barras, nombre, stock FROM productos WHERE codigo_barras LIKE ? LIMIT 10", (f'%{query}',))
-        
-    # ⚠️ CORRECCIÓN CLAVE: Devolvemos "codigo" para que el frontend HTML lo pueda leer correctamente
     resultados = [{"codigo": f[0], "nombre": f[1], "stock": f[2]} for f in cursor.fetchall()]
-    
     conexion.close()
     return resultados
 
-# ✍️ 1.3 RUTA PARA ACTUALIZAR EL STOCK
 @api.post("/api/actualizar")
 async def actualizar_stock(request: Request):
     datos = await request.json()
-    
-    # 🧹 Limpiamos espacios basura que puedan venir del celular o del Excel
     codigo_limpio = str(datos["codigo"]).strip()
     variacion = int(datos["variacion"])
     
-    ruta_base = os.path.dirname(os.path.abspath(__file__))
-    ruta_db = os.path.join(ruta_base, "sistema_mercado.db")
-    
+    ruta_db = obtener_ruta_db()
     conexion = sqlite3.connect(ruta_db, check_same_thread=False)
     cursor = conexion.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;")
-    
-    # 🛡️ Usamos CAST para obligar a SQLite a tratar el stock como un número matemático
     cursor.execute("UPDATE productos SET stock = CAST(stock AS INTEGER) + ? WHERE codigo_barras = ?", (variacion, codigo_limpio))
-    
     conexion.commit()
     conexion.close()
-    
     return {"status": "ok"}
 
 def arrancar_servidor():
@@ -282,70 +266,79 @@ def obtener_ip_local():
     try:
         s.connect(('10.255.255.255', 1))
         IP = s.getsockname()[0]
-    except Exception:
-        IP = '127.0.0.1'
-    finally:
-        s.close()
+    except Exception: IP = '127.0.0.1'
+    finally: s.close()
     return IP
 
 # ==========================================
-# 🔒 2. SEGURIDAD CRIPTOGRÁFICA Y TEMPORAL
+# 🔐 PANTALLA DE LOGIN INICIAL
 # ==========================================
-def verificar_licencia():
-    ruta_base = os.path.dirname(os.path.abspath(__file__))
-    ruta_lic = os.path.join(ruta_base, "licencia.key")
-    ruta_pub = os.path.join(ruta_base, "llave_publica.pem")
-    ruta_db = os.path.join(ruta_base, "sistema_mercado.db")
+class VentanaLogin(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("🔐 Control de Acceso")
+        self.geometry("380x420")
+        self.resizable(False, False)
+        
+        # Obliga al usuario a interactuar con el Login (si lo cierra con la X, se apaga el sistema)
+        self.protocol("WM_DELETE_WINDOW", self.cancelar_ingreso)
+        self.attributes("-topmost", True)
 
-    try:
-        comando = ['powershell.exe', '-Command', '(Get-CimInstance -Class Win32_ComputerSystemProduct).UUID']
-        CREATE_NO_WINDOW = 0x08000000 
-        uuid_pc = subprocess.check_output(comando, text=True, stderr=subprocess.STDOUT, creationflags=CREATE_NO_WINDOW).strip()
+        # UI
+        ctk.CTkLabel(self, text="🏪 Sistema Mercado", font=("Roboto", 24, "bold")).pack(pady=(30, 10))
+        ctk.CTkLabel(self, text="Seleccione su usuario:", font=("Roboto", 14)).pack(pady=(10, 5))
 
-        with open(ruta_lic, "r") as arch_lic:
-            paquete = json.load(arch_lic)
-            
-        datos_licencia = paquete["datos"]
-        firma_hex = paquete["firma"]
-        
-        with open(ruta_pub, "rb") as arch_pub:
-            llave_publica = rsa.PublicKey.load_pkcs1(arch_pub.read())
-            
-        mensaje = json.dumps(datos_licencia).encode('utf8')
-        firma_bytes = bytes.fromhex(firma_hex)
-        rsa.verify(mensaje, firma_bytes, llave_publica)
-        
-        if datos_licencia["uuid_placa"] != uuid_pc:
-            raise Exception("Licencia no válida para esta computadora.\nEl hardware no coincide.")
-            
-        fecha_vencimiento = datetime.strptime(datos_licencia["vencimiento"], "%Y-%m-%d").date()
-        fecha_actual_obj = datetime.now().date()
-        fecha_actual_str = fecha_actual_obj.strftime("%Y-%m-%d")
-        
-        if fecha_actual_obj > fecha_vencimiento:
-            raise Exception(f"El servicio expiró el {fecha_vencimiento}.\nPor favor, contacte al desarrollador.")
+        self.usuarios_db = self.obtener_usuarios()
+        nombres = [u['nombre'] for u in self.usuarios_db]
 
-        conexion = sqlite3.connect(ruta_db)
-        cursor = conexion.cursor()
-        cursor.execute("CREATE TABLE IF NOT EXISTS seguridad_reloj (id INTEGER PRIMARY KEY, ultima_fecha DATE)")
-        cursor.execute("SELECT ultima_fecha FROM seguridad_reloj WHERE id = 1")
-        registro = cursor.fetchone()
+        self.combo_usuarios = ctk.CTkComboBox(self, values=nombres, width=250, font=("Roboto", 14), state="readonly")
+        self.combo_usuarios.pack(pady=5)
         
-        if registro:
-            if fecha_actual_str < registro[0]:
-                conexion.close()
-                raise Exception("⚠️ Error de Sincronización.\nLa fecha de Windows ha sido alterada.")
-            else:
-                cursor.execute("UPDATE seguridad_reloj SET ultima_fecha = ? WHERE id = 1", (fecha_actual_str,))
-        else:
-            cursor.execute("INSERT INTO seguridad_reloj (id, ultima_fecha) VALUES (1, ?)", (fecha_actual_str,))
-            
-        conexion.commit()
-        conexion.close()
-            
-    except Exception as e:
-        messagebox.showerror("⛔ Sistema Bloqueado", str(e))
-        sys.exit()
+        ctk.CTkLabel(self, text="PIN de Seguridad:", font=("Roboto", 14)).pack(pady=(15, 5))
+        self.entry_pin = ctk.CTkEntry(self, width=250, font=("Roboto", 18), show="*")
+        self.entry_pin.pack(pady=5)
+        self.entry_pin.bind("<Return>", lambda event: self.autenticar())
+        self.entry_pin.focus()
+
+        self.btn_ingresar = ctk.CTkButton(self, text="Ingresar al Sistema", fg_color="#2FA572", hover_color="#238259", height=45, width=250, font=("Roboto", 16, "bold"), command=self.autenticar)
+        self.btn_ingresar.pack(pady=30)
+
+    def obtener_usuarios(self):
+        try:
+            conexion = sqlite3.connect(obtener_ruta_db())
+            cursor = conexion.cursor()
+            # Mostramos primero a los cajeros y luego al administrador
+            cursor.execute("SELECT nombre, pin, rol FROM usuarios ORDER BY rol DESC")
+            resultados = [{"nombre": f[0], "pin": f[1], "rol": f[2]} for f in cursor.fetchall()]
+            conexion.close()
+            return resultados
+        except:
+            return []
+
+    def autenticar(self):
+        usuario_elegido = self.combo_usuarios.get()
+        pin_ingresado = self.entry_pin.get().strip()
+
+        for u in self.usuarios_db:
+            if u['nombre'] == usuario_elegido:
+                if u['pin'] == pin_ingresado:
+                    # ¡ÉXITO! Guardamos los datos en el menú principal
+                    self.parent.usuario_activo = u['nombre']
+                    self.parent.rol_activo = u['rol']
+                    
+                    self.parent.configurar_por_rol()
+                    self.parent.deiconify() # Mostramos el menú principal
+                    self.destroy()          # Destruimos el Login
+                    return
+                else:
+                    messagebox.showerror("❌ Acceso Denegado", "El PIN ingresado es incorrecto.")
+                    self.entry_pin.delete(0, 'end')
+                    return
+                    
+    def cancelar_ingreso(self):
+        import sys
+        sys.exit() # Si cierran el login con la cruz, apaga el programa entero
 
 # ==========================================
 # 🎨 3. INTERFAZ GRÁFICA PRINCIPAL
@@ -356,19 +349,25 @@ ctk.set_appearance_mode("dark")
 class MenuPrincipal(ctk.CTk):
     def __init__(self):
         super().__init__()
+        
+        # Ocultamos el Menú apenas arranca para mostrar el Login
+        self.withdraw()
+        
+        self.usuario_activo = None
+        self.rol_activo = None
 
         self.title("Sistema Mercado ERP - Panel de Control")
-        # 🔧 Agrandamos la ventana para acomodar el servidor y el QR
-        self.geometry("750x650")
+        self.geometry("750x700")
         self.resizable(False, False)
 
-        # Títulos
+        # (Diseño del Menú Principal - Igual que antes)
         self.lbl_titulo = ctk.CTkLabel(self, text="🏪 Sistema Mercado", font=("Roboto", 28, "bold"))
         self.lbl_titulo.pack(pady=(20, 5))
-        self.lbl_subtitulo = ctk.CTkLabel(self, text="Panel de Administración General", font=("Roboto", 14), text_color="gray")
+        
+        # Renglón dinámico para saludar al usuario
+        self.lbl_subtitulo = ctk.CTkLabel(self, text="Cargando...", font=("Roboto", 14), text_color="gray")
         self.lbl_subtitulo.pack(pady=(0, 20))
 
-        # Contenedor dividido: Izquierda (Botones) | Derecha (Móvil)
         self.frame_central = ctk.CTkFrame(self, fg_color="transparent")
         self.frame_central.pack(fill="both", expand=True, padx=20)
 
@@ -377,41 +376,41 @@ class MenuPrincipal(ctk.CTk):
         self.col_botones.pack(side="left", fill="y", padx=20)
 
         self.btn_caja = ctk.CTkButton(self.col_botones, text="🛒 Abrir Caja Registradora", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_caja)
-        self.btn_caja.pack(pady=10)
+        self.btn_caja.pack(pady=7)
 
         self.btn_stock = ctk.CTkButton(self.col_botones, text="📦 Gestionar Stock", width=250, height=45, font=("Roboto", 15, "bold"), command=self.gestionar_stock)
-        self.btn_stock.pack(pady=10)
+        self.btn_stock.pack(pady=7)
         
         self.btn_libreta = ctk.CTkButton(self.col_botones, text="📓 Libreta de Fiados", fg_color="#1E88E5", hover_color="#1565C0", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_libreta)
-        self.btn_libreta.pack(pady=10)
+        self.btn_libreta.pack(pady=7)
 
         self.btn_arqueo = ctk.CTkButton(self.col_botones, text="🏦 Arqueo y Cierres", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_arqueo)
-        self.btn_arqueo.pack(pady=10)
+        self.btn_arqueo.pack(pady=7)
 
-        self.btn_gastos = ctk.CTkButton(self.col_botones, text="💸 Pagos del Día", height=50, font=("Roboto", 16, "bold"), fg_color="#D32F2F", hover_color="#B71C1C", command=lambda: VentanaGastos(self))
-        self.btn_gastos.pack(pady=10, padx=20, fill="x")
+        self.btn_gastos = ctk.CTkButton(self.col_botones, text="💸 Pagos del Día", height=45, font=("Roboto", 15, "bold"), fg_color="#D32F2F", hover_color="#B71C1C", command=lambda: VentanaGastos(self))
+        self.btn_gastos.pack(pady=7, fill="x")
 
-        self.btn_estadisticas = ctk.CTkButton(self.col_botones, text="📊 Historial y Estadísticas", height=50, font=("Roboto", 16, "bold"), fg_color="#F59E0B", hover_color="#D97706", command=lambda: VentanaEstadisticas(self))
-        self.btn_estadisticas.pack(pady=10, padx=20, fill="x")
+        self.btn_estadisticas = ctk.CTkButton(self.col_botones, text="📊 Historial y Estadísticas", height=45, font=("Roboto", 15, "bold"), fg_color="#F59E0B", hover_color="#D97706", command=lambda: VentanaEstadisticas(self))
+        self.btn_estadisticas.pack(pady=7, fill="x")
 
-        self.btn_ajustes = ctk.CTkButton(self.col_botones, text="⚙️ Ajustes del Local", fg_color="#546E7A", hover_color="#455A64", height=50, font=("Roboto", 16, "bold"), command=self.abrir_ajustes)
-        self.btn_ajustes.pack(pady=10, padx=20, fill="x")
+        self.btn_ajustes = ctk.CTkButton(self.col_botones, text="⚙️ Ajustes del Local", fg_color="#546E7A", hover_color="#455A64", height=45, font=("Roboto", 15, "bold"), command=self.abrir_ajustes)
+        self.btn_ajustes.pack(pady=7, fill="x")
+        
+        self.btn_backup = ctk.CTkButton(self.col_botones, text="📦 Crear Copia de Seguridad", fg_color="#4CAF50", hover_color="#388E3C", height=45, font=("Roboto", 15, "bold"), command=self.hacer_backup)
+        self.btn_backup.pack(pady=(15, 7), fill="x")
 
         # ----- COLUMNA DERECHA: CONEXIÓN MÓVIL -----
         self.col_movil = ctk.CTkFrame(self.frame_central, fg_color="#1E293B", corner_radius=15)
         self.col_movil.pack(side="right", fill="both", expand=True, padx=20, pady=10)
 
-        self.lbl_movil_titulo = ctk.CTkLabel(self.col_movil, text="📱 Conexión Móvil (Góndolas)", font=("Roboto", 16, "bold"))
+        self.lbl_movil_titulo = ctk.CTkLabel(self.col_movil, text="📱 Conexión Móvil (Góndolas)", font=("Roboto", 16, "bold"), text_color="white")
         self.lbl_movil_titulo.pack(pady=(15, 10))
 
-        # ⚙️ Generación Dinámica del QR (¡Con conversión a RGB!)
         ip_actual = obtener_ip_local()
         self.url_servidor = f"http://{ip_actual}:8000"
         
-        # Generamos el QR, extraemos la imagen base y la forzamos a RGB
         qr_crudo = qrcode.make(self.url_servidor)
         img_qr_pil = qr_crudo.get_image().convert("RGB")
-        
         self.qr_ctk = ctk.CTkImage(light_image=img_qr_pil, dark_image=img_qr_pil, size=(180, 180))
         
         self.lbl_qr = ctk.CTkLabel(self.col_movil, text="", image=self.qr_ctk)
@@ -425,9 +424,51 @@ class MenuPrincipal(ctk.CTk):
         self.switch_tema.pack(side="bottom", pady=20)
         self.switch_tema.select()
 
-        # 🚀 LANZAMIENTO DEL HILO DEL SERVIDOR
         self.hilo_api = threading.Thread(target=arrancar_servidor, daemon=True)
         self.hilo_api.start()
+        
+        # 🔐 INVOCAMOS AL LOGIN INICIAL ANTES DE DEJAR ENTRAR
+        self.after(200, self.mostrar_login)
+
+    def mostrar_login(self):
+        # Abre la ventana de login como un pop-up bloqueante
+        login = VentanaLogin(self)
+        self.wait_window(login)
+
+    def configurar_por_rol(self):
+        # Actualizamos el saludo
+        self.lbl_subtitulo.configure(text=f"Sesión iniciada por: {self.usuario_activo} | Nivel: {self.rol_activo}")
+        
+        # 🛡️ RESTRICCIONES PARA CAJEROS
+        if self.rol_activo == "CAJERO":
+            # Cambiamos el color a un gris apagado para indicar que no se puede apretar
+            color_bloqueado = "#333333"
+            
+            self.btn_stock.configure(state="disabled", fg_color=color_bloqueado)
+            self.btn_estadisticas.configure(state="disabled", fg_color=color_bloqueado)
+            self.btn_ajustes.configure(state="disabled", fg_color=color_bloqueado)
+            self.btn_backup.configure(state="disabled", fg_color=color_bloqueado)
+
+    def hacer_backup(self):
+        ruta_original = obtener_ruta_db()
+        directorio_base = os.path.dirname(ruta_original)
+        
+        if not os.path.exists(ruta_original):
+            messagebox.showerror("Error", "No se encontró la base de datos para respaldar.")
+            return
+
+        carpeta_backups = os.path.join(directorio_base, "backups")
+        os.makedirs(carpeta_backups, exist_ok=True)
+        
+        fecha_hora = datetime.now().strftime("%Y%m%d_%H%M")
+        nombre_copia = f"respaldo_{fecha_hora}.db"
+        ruta_copia = os.path.join(carpeta_backups, nombre_copia)
+        
+        try:
+            shutil.copy2(ruta_original, ruta_copia)
+            messagebox.showinfo("✅ Backup Exitoso", f"Se creó una copia de seguridad de sus datos.\nGuardada como: {nombre_copia}\nEn la carpeta: backups")
+        except Exception as e:
+            messagebox.showerror("❌ Error", f"No se pudo crear el backup:\n{e}")
 
     def cambiar_tema(self):
         if self.switch_tema.get() == 1:
@@ -438,40 +479,25 @@ class MenuPrincipal(ctk.CTk):
             self.switch_tema.configure(text="☀️ Modo Claro")
 
     def abrir_caja(self):
-        
-        ruta_base = os.path.dirname(os.path.abspath(__file__))
-        ruta_db = os.path.join(ruta_base, "sistema_mercado.db")
+        ruta_db = obtener_ruta_db()
         conexion = sqlite3.connect(ruta_db)
         cursor = conexion.cursor()
         
         try:
-            # Buscamos la última operación de la tabla de arqueo
             cursor.execute("SELECT tipo_operacion FROM arqueo_caja ORDER BY id_arqueo DESC LIMIT 1")
             registro = cursor.fetchone()
             
-            # Verificamos si la última operación fue una "Apertura"
-            # (Usamos .lower() y buscamos palabras clave por si lo guardás como "Apertura de Caja" o "Abrir Turno")
             if registro and ("apertura" in registro[0].lower() or "abrir" in registro[0].lower()):
-                # La caja está abierta, lo dejamos pasar a facturar
                 VentanaCaja(self)
             else:
-                # La última operación fue un cierre, o no se entiende el estado
-                messagebox.showwarning(
-                    "Caja Cerrada", 
-                    "⛔ No podés ingresar a la registradora.\nPrimero debés realizar la 'Apertura de Caja' desde la sección de Arqueo."
-                )
+                messagebox.showwarning("Caja Cerrada", "⛔ No podés ingresar a la registradora.\nPrimero debés realizar la 'Apertura de Caja' desde la sección de Arqueo.")
         except sqlite3.OperationalError:
-            # Si da error porque la tabla "arqueo_caja" todavía no existe (ej: instalación nueva), bloqueamos.
-            messagebox.showwarning(
-                "Caja Cerrada", 
-                "⛔ El sistema es nuevo y la caja está cerrada.\nPor favor, realizá tu primera 'Apertura de Caja' en la sección de Arqueo."
-            )
+            messagebox.showwarning("Caja Cerrada", "⛔ El sistema es nuevo y la caja está cerrada.\nPor favor, realizá tu primera 'Apertura de Caja' en la sección de Arqueo.")
         except Exception as e:
-            # Si hay un error raro de Windows, dejamos abrir para no trabar el local, pero avisamos en consola
-            print(f"⚠️ Error leyendo el estado de la caja: {e}")
             VentanaCaja(self) 
         finally:
             conexion.close()
+            
     def gestionar_stock(self): VentanaStock(self)
     def abrir_libreta(self): VentanaLibreta(self)
     def abrir_arqueo(self): VentanaArqueo(self)
@@ -480,16 +506,11 @@ class MenuPrincipal(ctk.CTk):
 if __name__ == "__main__":
     print("🔐 Iniciando control de licencias en la nube...")
     
-    # 1. Llamamos a la función para que vaya a preguntar a Supabase
+    inicializar_base_datos()
     estado_licencia = verificar_licencia_nube()
     
-    # 2. Decidimos si abrimos el programa o lo bloqueamos
     if estado_licencia == True or estado_licencia == "OFFLINE":
-        print("🚀 Permiso concedido. Abriendo el Sistema Mercado...")
         app = MenuPrincipal()
         app.mainloop()
-        
     else:
-        # Si la función devolvió False, mostramos error y el programa termina
-        print("🛑 ACCESO DENEGADO: La licencia está vencida o la computadora no está autorizada.")
-        # Al no ejecutar el mainloop(), la ventana nunca se abre y bloqueas el sistema.
+        print("🛑 ACCESO DENEGADO.")
