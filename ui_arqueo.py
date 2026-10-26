@@ -11,7 +11,7 @@ class VentanaArqueo(ctk.CTkToplevel):
         super().__init__(parent)
         
         self.title("🏦 Módulo Financiero - Arqueo de Caja")
-        self.geometry("650x740") # Ventana más amplia para acomodar fuentes más grandes
+        self.geometry("650x780") # 🛠️ Un poquito más alta para el nuevo renglón
         self.grab_set()
 
         self.ruta_db = RUTA_DB
@@ -35,14 +35,12 @@ class VentanaArqueo(ctk.CTkToplevel):
         self.frame_resumen = ctk.CTkFrame(self, corner_radius=15)
         self.frame_resumen.pack(padx=30, fill="both", expand=True)
 
-        # Configuramos 2 columnas: 0 para textos (izquierda) y 1 para montos (derecha)
         self.frame_resumen.columnconfigure(0, weight=1)
         self.frame_resumen.columnconfigure(1, weight=1)
 
         self.lbl_subtitulo = ctk.CTkLabel(self.frame_resumen, text="Resumen del Turno Actual", font=("Roboto", 18, "bold"), text_color="gray")
         self.lbl_subtitulo.grid(row=0, column=0, columnspan=2, pady=(15, 10))
 
-        # 🛠️ Función auxiliar para crear renglones alineados
         def crear_renglon(fila, texto, color_txt="white", color_val="white", negrita=False, tamaño=16):
             fuente_lbl = ("Roboto", tamaño)
             fuente_val = ("Roboto", tamaño, "bold") if negrita else ("Roboto", tamaño)
@@ -63,17 +61,16 @@ class VentanaArqueo(ctk.CTkToplevel):
 
         # --- EGRESOS ---
         self.val_gastos_efec = crear_renglon(6, "🔻 Salidas por Pagos (Efectivo):", color_txt="#EF4444", color_val="#EF4444")
-        self.val_gastos_transf = crear_renglon(7, "🔻 Salidas por Pagos (Virtual):", color_txt="#EF4444", color_val="#EF4444")
+        self.val_gastos_mp = crear_renglon(7, "🔻 Salidas por Pagos (Mercado Pago):", color_txt="#EF4444", color_val="#EF4444")
+        self.val_gastos_transf = crear_renglon(8, "🔻 Salidas por Pagos (Transferencia):", color_txt="#EF4444", color_val="#EF4444")
 
         # --- LÍNEA DIVISORIA VISUAL ---
         separador = ctk.CTkFrame(self.frame_resumen, height=2, fg_color="#475569")
-        separador.grid(row=8, column=0, columnspan=2, sticky="ew", padx=20, pady=10)
+        separador.grid(row=9, column=0, columnspan=2, sticky="ew", padx=20, pady=10)
 
         # --- TOTALES FINALES ---
-        self.val_ingreso_total = crear_renglon(9, "📈 INGRESO NETO DEL TURNO:", color_val="#3B82F6", negrita=True, tamaño=18)
-        
-        # Este es el número más importante para el cajero
-        self.val_efectivo_caja = crear_renglon(10, "💰 EFECTIVO FÍSICO A RENDIR:", color_val="#10B981", color_txt="#10B981", negrita=True, tamaño=20)
+        self.val_ingreso_total = crear_renglon(10, "📈 INGRESO NETO DEL TURNO:", color_val="#3B82F6", negrita=True, tamaño=18)
+        self.val_efectivo_caja = crear_renglon(11, "💰 EFECTIVO FÍSICO A RENDIR:", color_val="#10B981", color_txt="#10B981", negrita=True, tamaño=20)
 
         # ==========================================
         # 🔵 BOTONES DE ACCIÓN
@@ -116,9 +113,14 @@ class VentanaArqueo(ctk.CTkToplevel):
                     fecha DATETIME,
                     motivo TEXT,
                     monto_efectivo REAL,
+                    monto_mp REAL,
                     monto_transf REAL
                 )
             """)
+            # Parche para bases de datos existentes
+            try: cursor.execute("ALTER TABLE gastos ADD COLUMN monto_mp REAL")
+            except sqlite3.OperationalError: pass
+            
             conexion.commit()
         except Exception as e:
             print("Aviso interno:", e)
@@ -159,6 +161,7 @@ class VentanaArqueo(ctk.CTkToplevel):
         self.val_transf.configure(text="$ 0.00")
         self.val_cta_cte.configure(text="$ 0.00")
         self.val_gastos_efec.configure(text="-$ 0.00")
+        self.val_gastos_mp.configure(text="-$ 0.00")
         self.val_gastos_transf.configure(text="-$ 0.00")
         self.val_ingreso_total.configure(text="$ 0.00")
         self.val_efectivo_caja.configure(text="$ 0.00")
@@ -178,16 +181,19 @@ class VentanaArqueo(ctk.CTkToplevel):
             elif medio == 'TRANSFERENCIA': t_transf = total
             elif medio == 'CUENTA_CORRIENTE': t_cta_cte = total
 
-        cursor.execute("SELECT SUM(monto_efectivo), SUM(monto_transf) FROM gastos WHERE fecha >= ?", (self.fecha_apertura,))
+        # 🛠️ Sumamos también los gastos de Mercado Pago
+        cursor.execute("SELECT SUM(monto_efectivo), SUM(monto_mp), SUM(monto_transf) FROM gastos WHERE fecha >= ?", (self.fecha_apertura,))
         resultado_gastos = cursor.fetchone()
         
         salidas_efectivo = resultado_gastos[0] if resultado_gastos[0] else 0.0
-        salidas_transf = resultado_gastos[1] if resultado_gastos[1] else 0.0
+        salidas_mp = resultado_gastos[1] if resultado_gastos[1] else 0.0
+        salidas_transf = resultado_gastos[2] if resultado_gastos[2] else 0.0
 
         self.efectivo_esperado = (self.fondo_fijo + t_efectivo) - salidas_efectivo
         
         ingreso_bruto = t_efectivo + t_mp + t_transf
-        ingreso_neto = ingreso_bruto - (salidas_efectivo + salidas_transf)
+        # 🛠️ Restamos todos los gastos del ingreso neto del local
+        ingreso_neto = ingreso_bruto - (salidas_efectivo + salidas_mp + salidas_transf)
 
         # Actualización visual de etiquetas
         self.val_fondo_fijo.configure(text=f"$ {self.fondo_fijo:,.2f}")
@@ -197,6 +203,7 @@ class VentanaArqueo(ctk.CTkToplevel):
         self.val_cta_cte.configure(text=f"$ {t_cta_cte:,.2f}")
         
         self.val_gastos_efec.configure(text=f"-$ {salidas_efectivo:,.2f}")
+        self.val_gastos_mp.configure(text=f"-$ {salidas_mp:,.2f}")
         self.val_gastos_transf.configure(text=f"-$ {salidas_transf:,.2f}")
         
         self.val_ingreso_total.configure(text=f"$ {ingreso_neto:,.2f}")
@@ -274,11 +281,13 @@ class VentanaArqueo(ctk.CTkToplevel):
             self.actualizar_estado()
 
     def generar_backup_automatico(self):
-        """Genera una copia de seguridad silenciosa al cerrar la caja."""
+        """Genera una copia de seguridad y mantiene solo los últimos 30 cierres."""
+        import os
+        import shutil
+        from datetime import datetime
+        
         directorio_base = os.path.dirname(self.ruta_db)
         carpeta_backups = os.path.join(directorio_base, "backups_cierres")
-        
-        # Creamos la carpeta si no existe
         os.makedirs(carpeta_backups, exist_ok=True)
         
         fecha_hora = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -288,6 +297,17 @@ class VentanaArqueo(ctk.CTkToplevel):
         try:
             shutil.copy2(self.ruta_db, ruta_copia)
             print(f"✅ Backup automático creado: {nombre_copia}")
+            
+            # --- LÓGICA DE AUTO-LIMPIEZA ---
+            archivos = [os.path.join(carpeta_backups, f) for f in os.listdir(carpeta_backups) if f.endswith('.db')]
+            archivos.sort(key=os.path.getmtime)
+            
+            LIMITE_BACKUPS = 30
+            while len(archivos) > LIMITE_BACKUPS:
+                archivo_viejo = archivos.pop(0)
+                os.remove(archivo_viejo)
+                print(f"🧹 Backup viejo eliminado automáticamente para liberar espacio.")
+                
         except Exception as e:
             print(f"⚠️ Aviso: Fallo el backup automático: {e}")
 

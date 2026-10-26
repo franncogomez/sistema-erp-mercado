@@ -10,7 +10,7 @@ class VentanaGastos(ctk.CTkToplevel):
         super().__init__(parent)
         
         self.title("💸 Pagos a Proveedores y Gastos")
-        self.geometry("450x550")
+        self.geometry("450x620") # 🛠️ Un poco más alta para que entren los 3 cuadros del mixto
         self.grab_set()
 
         self.ruta_db = RUTA_DB
@@ -36,7 +36,7 @@ class VentanaGastos(ctk.CTkToplevel):
 
         self.combo_metodo = ctk.CTkComboBox(
             self, 
-            values=["Efectivo", "Transferencia / Virtual", "Mixto (Efectivo y Transferencia)"],
+            values=["Efectivo", "Mercado Pago", "Transferencia", "Mixto (Dividir Pago)"],
             width=250,
             font=("Roboto", 14),
             state="readonly",
@@ -51,6 +51,7 @@ class VentanaGastos(ctk.CTkToplevel):
 
         self.entry_unico = None
         self.entry_mix_efec = None
+        self.entry_mix_mp = None
         self.entry_mix_transf = None
 
         self.actualizar_campos_monto("Efectivo")
@@ -66,11 +67,16 @@ class VentanaGastos(ctk.CTkToplevel):
         for widget in self.frame_montos.winfo_children():
             widget.destroy()
 
-        if eleccion == "Mixto (Efectivo y Transferencia)":
+        if eleccion == "Mixto (Dividir Pago)":
             lbl_mix_efec = ctk.CTkLabel(self.frame_montos, text="Monto pagado en EFECTIVO ($):", font=("Roboto", 13, "bold"), text_color="#2FA572")
             lbl_mix_efec.pack(pady=(0, 2))
             self.entry_mix_efec = ctk.CTkEntry(self.frame_montos, width=180, font=("Roboto", 16), justify="center")
-            self.entry_mix_efec.pack(pady=(0, 15))
+            self.entry_mix_efec.pack(pady=(0, 10))
+
+            lbl_mix_mp = ctk.CTkLabel(self.frame_montos, text="Monto pagado en MERCADO PAGO ($):", font=("Roboto", 13, "bold"), text_color="#00A650")
+            lbl_mix_mp.pack(pady=(0, 2))
+            self.entry_mix_mp = ctk.CTkEntry(self.frame_montos, width=180, font=("Roboto", 16), justify="center")
+            self.entry_mix_mp.pack(pady=(0, 10))
 
             lbl_mix_transf = ctk.CTkLabel(self.frame_montos, text="Monto pagado por TRANSFERENCIA ($):", font=("Roboto", 13, "bold"), text_color="#009EE3")
             lbl_mix_transf.pack(pady=(0, 2))
@@ -80,7 +86,10 @@ class VentanaGastos(ctk.CTkToplevel):
             self.entry_unico = None 
             
         else:
-            color_lbl = "#2FA572" if eleccion == "Efectivo" else "#009EE3"
+            if eleccion == "Efectivo": color_lbl = "#2FA572"
+            elif eleccion == "Mercado Pago": color_lbl = "#00A650"
+            else: color_lbl = "#009EE3"
+            
             lbl_unico = ctk.CTkLabel(self.frame_montos, text=f"Monto total en {eleccion.upper()} ($):", font=("Roboto", 14, "bold"), text_color=color_lbl)
             lbl_unico.pack(pady=(10, 5))
             
@@ -88,21 +97,30 @@ class VentanaGastos(ctk.CTkToplevel):
             self.entry_unico.pack(pady=5)
             
             self.entry_mix_efec = None
+            self.entry_mix_mp = None
             self.entry_mix_transf = None
 
     def crear_tabla_gastos(self):
         try:
             conexion = sqlite3.connect(self.ruta_db)
             cursor = conexion.cursor()
+            # Creamos la tabla con la nueva columna monto_mp por si el sistema es nuevo
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS gastos (
                     id_gasto INTEGER PRIMARY KEY AUTOINCREMENT,
                     fecha DATETIME,
                     motivo TEXT,
                     monto_efectivo REAL,
+                    monto_mp REAL,
                     monto_transf REAL
                 )
             """)
+            # 🛠️ Parche silencioso: Le inyectamos la columna a bases de datos que ya existan
+            try:
+                cursor.execute("ALTER TABLE gastos ADD COLUMN monto_mp REAL")
+            except sqlite3.OperationalError:
+                pass # Si da error es porque ya existe, no hacemos nada
+                
             conexion.commit()
         except Exception as e:
             messagebox.showerror("Error", f"Error al inicializar la base de datos de gastos:\n{e}")
@@ -118,31 +136,35 @@ class VentanaGastos(ctk.CTkToplevel):
             return
 
         efectivo = 0.0
+        mp = 0.0
         transf = 0.0
 
         try:
-            if metodo == "Mixto (Efectivo y Transferencia)":
+            if metodo == "Mixto (Dividir Pago)":
                 str_efec = self.entry_mix_efec.get().replace(',', '.')
+                str_mp = self.entry_mix_mp.get().replace(',', '.')
                 str_transf = self.entry_mix_transf.get().replace(',', '.')
+                
                 if str_efec: efectivo = float(str_efec)
+                if str_mp: mp = float(str_mp)
                 if str_transf: transf = float(str_transf)
             else:
                 str_unico = self.entry_unico.get().replace(',', '.')
                 if not str_unico: raise ValueError
                 
-                if metodo == "Efectivo":
-                    efectivo = float(str_unico)
-                else:
-                    transf = float(str_unico)
+                if metodo == "Efectivo": efectivo = float(str_unico)
+                elif metodo == "Mercado Pago": mp = float(str_unico)
+                else: transf = float(str_unico)
 
-            total = efectivo + transf
+            total = efectivo + mp + transf
             if total <= 0:
                 messagebox.showwarning("⚠️ Monto inválido", "El total del pago debe ser mayor a cero.")
                 return
 
             mensaje = f"¿Confirmar salida de dinero por:\n'{motivo}'?\n\n"
             if efectivo > 0: mensaje += f"💵 Efectivo: ${efectivo:.2f}\n"
-            if transf > 0: mensaje += f"📱 Digital: ${transf:.2f}\n"
+            if mp > 0: mensaje += f"💳 Mercado Pago: ${mp:.2f}\n"
+            if transf > 0: mensaje += f"📱 Transferencia: ${transf:.2f}\n"
             mensaje += f"\nTOTAL PAGADO: ${total:.2f}"
 
             if not messagebox.askyesno("⚠️ Confirmar Gasto", mensaje):
@@ -152,11 +174,12 @@ class VentanaGastos(ctk.CTkToplevel):
             conexion = sqlite3.connect(self.ruta_db)
             cursor = conexion.cursor()
             
-            cursor.execute("INSERT INTO gastos (fecha, motivo, monto_efectivo, monto_transf) VALUES (?, ?, ?, ?)", (fecha_actual, motivo, efectivo, transf))
+            # Guardamos los 3 montos en la base de datos
+            cursor.execute("INSERT INTO gastos (fecha, motivo, monto_efectivo, monto_mp, monto_transf) VALUES (?, ?, ?, ?, ?)", (fecha_actual, motivo, efectivo, mp, transf))
             conexion.commit()
             conexion.close()
 
-            messagebox.showinfo("✅ Éxito", "Gasto registrado.\n\nSi pagaste en efectivo, ya se descontó de tu Arqueo de Caja.")
+            messagebox.showinfo("✅ Éxito", "Gasto registrado.\n\nEl sistema ya lo descontó automáticamente del Arqueo de Caja correspondiente.")
             self.destroy()
 
         except ValueError:

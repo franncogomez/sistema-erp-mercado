@@ -5,6 +5,7 @@ import sqlite3
 import os
 from tkinter import filedialog
 import pandas as pd
+from datetime import datetime
 from rutas import RUTA_DB
 
 class VentanaStock(ctk.CTkToplevel):
@@ -14,6 +15,9 @@ class VentanaStock(ctk.CTkToplevel):
         self.geometry("1050x650") 
         self.grab_set()
         self.ruta_db = RUTA_DB
+        
+        # 🟢 Estado del orden de la tabla
+        self.modo_orden = "normal" 
 
         # ==========================================
         # 🟢 TÍTULO
@@ -28,7 +32,6 @@ class VentanaStock(ctk.CTkToplevel):
         self.frame_top.pack(pady=5, padx=20, fill="x")
         self.frame_top.pack_propagate(False) 
 
-        # 1. Filtro de Stock Crítico Personalizable (Switch + Entry)
         self.frame_critico = ctk.CTkFrame(self.frame_top, fg_color="transparent")
         self.frame_critico.place(relx=0.0, rely=0.5, anchor="w")
 
@@ -48,7 +51,6 @@ class VentanaStock(ctk.CTkToplevel):
         self.entry_umbral.pack(side="left", padx=(5, 0))
         self.entry_umbral.bind("<Return>", lambda e: self.aplicar_filtro())
 
-        # 2. Buscador (Centrado absoluto)
         self.frame_buscador = ctk.CTkFrame(self.frame_top, fg_color="transparent")
         self.frame_buscador.place(relx=0.5, rely=0.5, anchor="center")
 
@@ -71,7 +73,6 @@ class VentanaStock(ctk.CTkToplevel):
         self.btn_limpiar = ctk.CTkButton(self.frame_buscador, text="❌ Limpiar", width=70, height=35, fg_color="#C62828", hover_color="#8e1d1d", command=self.limpiar_busqueda)
         self.btn_limpiar.pack(side="left", padx=5)
 
-        # 3. Inyectar Excel (Anclado a la derecha)
         self.btn_importar = ctk.CTkButton(self.frame_top, text="📥 Inyectar Excel", fg_color="#4A148C", hover_color="#311B92", height=35, font=("Roboto", 14, "bold"), command=self.importar_excel)
         self.btn_importar.place(relx=1.0, rely=0.5, anchor="e")
 
@@ -99,7 +100,6 @@ class VentanaStock(ctk.CTkToplevel):
         self.btn_ver_lista = ctk.CTkButton(self.frame_acciones, text="📝 Abrir Anotador", fg_color="#8E24AA", hover_color="#6A1B9A", height=40, font=("Roboto", 13, "bold"), command=self.abrir_anotador)
         self.btn_ver_lista.pack(side="left", padx=8)
 
-        # 🛠️ NUEVO BOTÓN: Imprimir Etiquetas
         self.btn_imprimir_etiquetas = ctk.CTkButton(self.frame_acciones, text="🖨️ Imprimir Etiquetas", fg_color="#00ACC1", hover_color="#00838F", height=40, font=("Roboto", 13, "bold"), command=self.imprimir_etiquetas)
         self.btn_imprimir_etiquetas.pack(side="left", padx=8)
 
@@ -107,7 +107,7 @@ class VentanaStock(ctk.CTkToplevel):
         self.btn_eliminar.pack(side="left", padx=8)
 
         # ==========================================
-        # 🟡 LA TABLA DE INVENTARIO CON SCROLLBAR
+        # 🟡 LA TABLA DE INVENTARIO
         # ==========================================
         self.frame_tabla = ctk.CTkFrame(self)
         self.frame_tabla.pack(side="top", padx=20, pady=(5, 15), fill="both", expand=True)
@@ -122,11 +122,13 @@ class VentanaStock(ctk.CTkToplevel):
         self.tabla = ttk.Treeview(self.frame_tabla, columns=columnas, show="headings")
 
         self.tabla.heading("codigo", text="Código de Barras")
-        self.tabla.heading("nombre", text="Producto")
+        # 🛠️ NUEVO: Clic en "Producto" vuelve a la normalidad
+        self.tabla.heading("nombre", text="Producto ⬇️", command=self.orden_normal)
         self.tabla.heading("marca", text="Marca")
         self.tabla.heading("rubro", text="Rubro")
-        self.tabla.heading("precio", text="Precio Venta")
-        self.tabla.heading("stock", text="Stock Actual")
+        # 🛠️ NUEVO: Clic en Precio o Stock activa el filtro de Recientes
+        self.tabla.heading("precio", text="Precio Venta 🕒", command=self.toggle_orden_recientes)
+        self.tabla.heading("stock", text="Stock Actual 🕒", command=self.toggle_orden_recientes)
 
         self.tabla.column("codigo", width=130, anchor="center")
         self.tabla.column("nombre", width=300, anchor="w")
@@ -143,11 +145,45 @@ class VentanaStock(ctk.CTkToplevel):
         self.tabla.pack(side="left", fill="both", expand=True, padx=(5, 0), pady=5)
         self.scrollbar.pack(side="right", fill="y", padx=(0, 5), pady=5)
 
+        self.parche_columnas_tiempo()
         self.cargar_datos()
 
     # ==========================================
-    # ⚙️ FUNCIONES DE LA BASE DE DATOS Y FILTROS
+    # ⏱️ LÓGICA DE ORDENAMIENTO DINÁMICO
     # ==========================================
+    def toggle_orden_recientes(self):
+        """Activa el orden por modificaciones recientes."""
+        self.modo_orden = "recientes"
+        self.tabla.heading("nombre", text="Producto")
+        self.tabla.heading("precio", text="Precio Venta 🔽")
+        self.tabla.heading("stock", text="Stock Actual 🔽")
+        self.cargar_datos()
+
+    def orden_normal(self):
+        """Restaura el orden alfabético original."""
+        self.modo_orden = "normal"
+        self.tabla.heading("nombre", text="Producto ⬇️")
+        self.tabla.heading("precio", text="Precio Venta 🕒")
+        self.tabla.heading("stock", text="Stock Actual 🕒")
+        self.cargar_datos()
+
+    # ==========================================
+    # ⚙️ BD Y FUNCIONES GENERALES
+    # ==========================================
+    def parche_columnas_tiempo(self):
+        try:
+            conexion = sqlite3.connect(self.ruta_db)
+            cursor = conexion.cursor()
+            fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("ALTER TABLE productos ADD COLUMN fecha_creacion TEXT")
+            cursor.execute("ALTER TABLE productos ADD COLUMN fecha_modificacion TEXT")
+            cursor.execute("UPDATE productos SET fecha_creacion = ?, fecha_modificacion = ?", (fecha_hoy, fecha_hoy))
+            conexion.commit()
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            if 'conexion' in locals(): conexion.close()
+
     def obtener_umbral(self):
         try:
             val = int(self.entry_umbral.get().strip())
@@ -194,13 +230,15 @@ class VentanaStock(ctk.CTkToplevel):
                 umbral = self.obtener_umbral()
                 query += f" WHERE CAST(stock AS INTEGER) <= {umbral} AND LENGTH(codigo_barras) > 4"
                 
-            query += " ORDER BY (precio = 0 AND LENGTH(codigo_barras) <= 4) DESC, nombre ASC LIMIT 150"
+            # 🛠️ APLICAMOS EL ORDEN ELEGIDO
+            if self.modo_orden == "recientes":
+                query += " ORDER BY COALESCE(fecha_modificacion, fecha_creacion, '2000-01-01') DESC LIMIT 200"
+            else:
+                query += " ORDER BY (precio = 0 AND LENGTH(codigo_barras) <= 4) DESC, nombre ASC LIMIT 150"
             
             cursor.execute(query)
             productos = cursor.fetchall()
-
-            for p in productos:
-                self.procesar_fila_tabla(*p)
+            for p in productos: self.procesar_fila_tabla(*p)
 
         except Exception as e:
             messagebox.showerror("❌ Error", f"Error al cargar la base de datos:\n{e}")
@@ -244,14 +282,17 @@ class VentanaStock(ctk.CTkToplevel):
                     query += " AND codigo_barras LIKE ?"
                     parametros.append(param)
                 
-            query += " ORDER BY (precio = 0 AND LENGTH(codigo_barras) <= 4) DESC, nombre ASC LIMIT 100"
+            # 🛠️ APLICAMOS EL ORDEN ELEGIDO TAMBIÉN EN LA BÚSQUEDA
+            if self.modo_orden == "recientes":
+                query += " ORDER BY COALESCE(fecha_modificacion, fecha_creacion, '2000-01-01') DESC LIMIT 200"
+            else:
+                query += " ORDER BY (precio = 0 AND LENGTH(codigo_barras) <= 4) DESC, nombre ASC LIMIT 100"
             
             cursor.execute(query, parametros)
             productos = cursor.fetchall()
 
             if productos:
-                for p in productos:
-                    self.procesar_fila_tabla(*p)
+                for p in productos: self.procesar_fila_tabla(*p)
                 self.tabla.selection_set(self.tabla.get_children()[0])
             else:
                 messagebox.showinfo("🔍 Búsqueda", f"No se encontraron productos coincidentes.")
@@ -263,9 +304,6 @@ class VentanaStock(ctk.CTkToplevel):
             if 'conexion' in locals(): conexion.close()
             self.entry_buscador.focus()
 
-    # ==========================================
-    # 🖨️ IMPRESIÓN DE ETIQUETAS DE GÓNDOLA (Térmica)
-    # ==========================================
     # ==========================================
     # 🖨️ IMPRESIÓN DE ETIQUETAS MULTIFORMATO
     # ==========================================
@@ -310,7 +348,6 @@ class VentanaStock(ctk.CTkToplevel):
         import textwrap
         import webbrowser
 
-        # Plantilla CSS para hoja A4 (Cuadrícula de 4 columnas)
         html_a4 = """<html><head><meta charset="utf-8"><style>
             @page { size: A4; margin: 10mm; }
             body { font-family: Arial, sans-serif; background: #fff; color: #000; }
@@ -321,7 +358,6 @@ class VentanaStock(ctk.CTkToplevel):
             .codigo { font-size: 10px; color: #444; }
         </style></head><body><div class="grid">"""
 
-        # Plantilla CSS para Zebra (Etiqueta individual estándar de 60x40mm)
         html_zebra = """<html><head><meta charset="utf-8"><style>
             @page { size: 60mm 40mm; margin: 2mm; }
             body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #fff; color: #000; }
@@ -361,7 +397,6 @@ class VentanaStock(ctk.CTkToplevel):
                 contenido = html_a4 if formato == "a4" else html_zebra
                 fd, ruta = tempfile.mkstemp(suffix=".html")
                 with os.fdopen(fd, 'w', encoding='utf-8') as f: f.write(contenido)
-                import webbrowser
                 webbrowser.open(f"file://{ruta}")
         except Exception as e:
             messagebox.showerror("❌ Error", f"Fallo al generar archivo:\n{e}")
@@ -431,6 +466,9 @@ class VentanaStock(ctk.CTkToplevel):
         btn_guardar = ctk.CTkButton(ventana_notas, text="💾 Guardar Cambios", command=guardar_notas, fg_color="#2FA572", hover_color="#237a54", height=45, font=("Roboto", 14, "bold"))
         btn_guardar.pack(pady=15)
 
+    # ==========================================
+    # ⚙️ CREACIÓN Y EDICIÓN
+    # ==========================================
     def crear_producto_suelto(self):
         dialogo_cod = ctk.CTkInputDialog(text="Ingrese un CÓDIGO CORTO (Ej: 1 para Pan, 2 para Tomate):", title="➕ Nuevo Pesable")
         codigo = dialogo_cod.get_input()
@@ -453,7 +491,8 @@ class VentanaStock(ctk.CTkToplevel):
                 messagebox.showerror("❌ Error", "Ese código ya está en uso.")
                 return
                 
-            cursor.execute("INSERT INTO productos (codigo_barras, nombre, precio, stock, marca, cat1, cat2, cat3) VALUES (?, ?, 0, 0, 'Suelto', 'Pesable', '', '')", (codigo.strip(), nombre.strip().upper()))
+            fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("INSERT INTO productos (codigo_barras, nombre, precio, stock, marca, cat1, cat2, cat3, fecha_creacion, fecha_modificacion) VALUES (?, ?, 0, 0, 'Suelto', 'Pesable', '', '', ?, ?)", (codigo.strip(), nombre.strip().upper(), fecha_hoy, fecha_hoy))
             conexion.commit()
             
             messagebox.showinfo("✅ Éxito", f"Producto '{nombre.strip().upper()}' creado con éxito.")
@@ -473,7 +512,6 @@ class VentanaStock(ctk.CTkToplevel):
             title="Seleccionar lista del proveedor",
             filetypes=(("Archivos Excel", "*.xlsx *.xls"), ("Archivos CSV", "*.csv"))
         )
-        
         if not archivo: return
 
         try:
@@ -506,6 +544,8 @@ class VentanaStock(ctk.CTkToplevel):
             }
             df.rename(columns=renombres, inplace=True)
 
+            df = df.loc[:, ~df.columns.duplicated()]
+
             if 'codigo' not in df.columns or 'nombre' not in df.columns:
                 messagebox.showerror("❌ Error de Columnas", "Falta la columna 'codigo' o la columna 'nombre' en su Excel.")
                 return
@@ -517,6 +557,7 @@ class VentanaStock(ctk.CTkToplevel):
             cursor = conexion.cursor()
             
             nuevos = 0; actualizados = 0; sin_cambios = 0; errores = 0 
+            fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             for index, fila in df.iterrows():
                 try:
@@ -567,12 +608,12 @@ class VentanaStock(ctk.CTkToplevel):
                         cat3_final = cat3 if cat3 != "" else cat3_db
                         
                         if (precio_db != precio_final) or (producto_db[0] != nombre) or (marca_db != marca_final) or (cat1_db != cat1_final):
-                            cursor.execute("UPDATE productos SET nombre = ?, precio = ?, marca = ?, cat1 = ?, cat2 = ?, cat3 = ? WHERE codigo_barras = ?", (nombre, precio_final, marca_final, cat1_final, cat2_final, cat3_final, codigo))
+                            cursor.execute("UPDATE productos SET nombre = ?, precio = ?, marca = ?, cat1 = ?, cat2 = ?, cat3 = ?, fecha_modificacion = ? WHERE codigo_barras = ?", (nombre, precio_final, marca_final, cat1_final, cat2_final, cat3_final, fecha_hoy, codigo))
                             actualizados += 1
                         else:
                             sin_cambios += 1 
                     else:
-                        cursor.execute("INSERT INTO productos (codigo_barras, nombre, precio, stock, marca, cat1, cat2, cat3) VALUES (?, ?, ?, 0, ?, ?, ?, ?)", (codigo, nombre, val_precio, marca, cat1, cat2, cat3))
+                        cursor.execute("INSERT INTO productos (codigo_barras, nombre, precio, stock, marca, cat1, cat2, cat3, fecha_creacion, fecha_modificacion) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)", (codigo, nombre, val_precio, marca, cat1, cat2, cat3, fecha_hoy, fecha_hoy))
                         nuevos += 1
                 except Exception:
                     errores += 1 
@@ -624,9 +665,10 @@ class VentanaStock(ctk.CTkToplevel):
 
         if messagebox.askyesno("⚠️ Confirmar", f"¿Guardar cambios?\n\nAnterior: {nombre}\nNuevo: {nuevo_nombre.strip()}"):
             try:
+                fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conexion = sqlite3.connect(self.ruta_db)
                 cursor = conexion.cursor()
-                cursor.execute("UPDATE productos SET nombre = ? WHERE codigo_barras = ?", (nuevo_nombre.strip(), codigo))
+                cursor.execute("UPDATE productos SET nombre = ?, fecha_modificacion = ? WHERE codigo_barras = ?", (nuevo_nombre.strip(), fecha_hoy, codigo))
                 conexion.commit()
                 messagebox.showinfo("✅ Éxito", "Nombre actualizado.")
                 if self.entry_buscador.get().strip(): self.buscar_producto()
@@ -650,9 +692,10 @@ class VentanaStock(ctk.CTkToplevel):
             if nuevo_precio < 0: raise ValueError
             
             if messagebox.askyesno("⚠️ Confirmar", f"¿Guardar precio para {nombre}?\n\nNuevo Precio: ${nuevo_precio:.2f}"):
+                fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conexion = sqlite3.connect(self.ruta_db)
                 cursor = conexion.cursor()
-                cursor.execute("UPDATE productos SET precio = ? WHERE codigo_barras = ?", (nuevo_precio, codigo))
+                cursor.execute("UPDATE productos SET precio = ?, fecha_modificacion = ? WHERE codigo_barras = ?", (nuevo_precio, fecha_hoy, codigo))
                 conexion.commit()
                 messagebox.showinfo("✅ Éxito", "Precio actualizado.")
                 if self.entry_buscador.get().strip(): self.buscar_producto()
@@ -680,9 +723,10 @@ class VentanaStock(ctk.CTkToplevel):
 
         try:
             nuevo_stock = int(cantidad_str)
+            fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             conexion = sqlite3.connect(self.ruta_db)
             cursor = conexion.cursor()
-            cursor.execute("UPDATE productos SET stock = ? WHERE codigo_barras = ?", (nuevo_stock, codigo))
+            cursor.execute("UPDATE productos SET stock = ?, fecha_modificacion = ? WHERE codigo_barras = ?", (nuevo_stock, fecha_hoy, codigo))
             conexion.commit()
             messagebox.showinfo("✅ Éxito", f"El stock de {nombre} se corrigió a {nuevo_stock}.")
             if self.entry_buscador.get().strip(): self.buscar_producto()

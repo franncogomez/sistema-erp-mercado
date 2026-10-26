@@ -50,9 +50,45 @@ def inicializar_base_datos():
         razon_social TEXT, nombre_fantasia TEXT, cuit TEXT, direccion TEXT, 
         telefono TEXT, instagram TEXT, condicion_iva TEXT, iibb TEXT, inicio_actividades TEXT
     )''')
+    
     try: cursor.execute("ALTER TABLE config_local ADD COLUMN instagram TEXT")
     except: pass 
+    try: cursor.execute("ALTER TABLE config_local ADD COLUMN mensaje_ticket TEXT")
+    except: pass 
+    try: cursor.execute("ALTER TABLE config_local ADD COLUMN mp_alias TEXT")
+    except: pass 
+    try: cursor.execute("ALTER TABLE config_local ADD COLUMN mp_token TEXT")
+    except: pass 
+
+    # 🛠️ ASEGURAMOS LA TABLA DE VENTAS E INYECTAMOS COLUMNAS FISCALES
+    cursor.execute('''CREATE TABLE IF NOT EXISTS ventas (
+        id_venta INTEGER PRIMARY KEY AUTOINCREMENT,
+        fecha DATETIME,
+        total REAL,
+        medio_pago TEXT
+    )''')
     
+    try: cursor.execute("ALTER TABLE ventas ADD COLUMN tipo_comprobante TEXT DEFAULT 'TICKET NO FISCAL'")
+    except: pass
+    try: cursor.execute("ALTER TABLE ventas ADD COLUMN nro_comprobante INTEGER DEFAULT 0")
+    except: pass
+    try: cursor.execute("ALTER TABLE ventas ADD COLUMN cae TEXT DEFAULT ''")
+    except: pass
+    try: cursor.execute("ALTER TABLE ventas ADD COLUMN doc_cliente TEXT DEFAULT ''")
+    except: pass
+
+    # 🛠️ NUEVA TABLA: DETALLE DE VENTAS (Para estadísticas avanzadas y reimpresión)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS ventas_detalle (
+        id_detalle INTEGER PRIMARY KEY AUTOINCREMENT,
+        id_venta INTEGER,
+        codigo_producto TEXT,
+        nombre_producto TEXT,
+        cantidad REAL,
+        precio_unitario REAL,
+        subtotal REAL,
+        FOREIGN KEY(id_venta) REFERENCES ventas(id_venta)
+    )''')
+
     # 🛡️ Tabla de Usuarios y Roles
     cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios (
         id_usuario INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,10 +97,9 @@ def inicializar_base_datos():
         rol TEXT
     )''')
     
-    # Si no hay usuarios (instalación nueva), creamos los 2 por defecto
     cursor.execute("SELECT COUNT(*) FROM usuarios")
     if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO usuarios (nombre, pin, rol) VALUES ('ADMIN (Dueño)', '1234', 'ADMINISTRADOR')")
+        cursor.execute("INSERT INTO usuarios (nombre, pin, rol) VALUES ('ADMIN (Dueño)', '1234', 'MASTER')")
         cursor.execute("INSERT INTO usuarios (nombre, pin, rol) VALUES ('CAJA 1 (Empleado)', '0000', 'CAJERO')")
         
     conexion.commit()
@@ -75,6 +110,7 @@ def inicializar_base_datos():
 # ==========================================
 ruta_base = os.path.dirname(obtener_ruta_db())
 load_dotenv(os.path.join(ruta_base, ".env"))
+
 URL_NUBE = os.getenv("SUPABASE_URL")
 LLAVE_API = os.getenv("SUPABASE_KEY")
 
@@ -124,9 +160,20 @@ def verificar_licencia_nube():
             fecha_evaluar = respuesta.data[0]["fecha_vencimiento"]
             gestionar_licencia_local(fecha_evaluar)
         else:
+            try:
+                import tkinter as tk
+                r = tk.Tk()
+                r.withdraw()
+                r.clipboard_clear()
+                r.clipboard_append(id_pc)
+                r.update()
+                r.destroy()
+            except: pass
+            
             mensaje = (
                 f"🛑 Este equipo no está autorizado para usar Sistema Mercado.\n\n"
-                f"Para activar tu licencia, enviale este código de hardware a Franco:\n\n"
+                f"✅ Tu CÓDIGO DE EQUIPO ya fue COPIADO automáticamente a tu portapapeles.\n\n"
+                f"Pegalo en un mensaje de WhatsApp a Franco para activar el sistema:\n\n"
                 f"👉 ID: {id_pc}"
             )
             messagebox.showerror("Equipo No Registrado", mensaje)
@@ -161,116 +208,6 @@ def verificar_licencia_nube():
         return False
 
 # ==========================================
-# 📡 MOTOR DEL SERVIDOR MÓVIL (FASTAPI)
-# ==========================================
-api = FastAPI()
-
-@api.get("/", response_class=HTMLResponse)
-def panel_movil():
-    html_content = """
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Control de Stock</title>
-        <style>
-            body { font-family: Arial, sans-serif; background: #1E293B; color: white; padding: 20px; }
-            h2 { text-align: center; color: #38BDF8; }
-            input { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 20px; box-sizing: border-box; border-radius: 8px; border: none; text-align: center; }
-            .producto { background: #334155; padding: 15px; margin-bottom: 10px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-            .producto h3 { margin: 0 0 10px 0; font-size: 20px; }
-            .stock { font-size: 18px; margin-bottom: 15px; color: #94A3B8;}
-            .stock b { color: #34D399; font-size: 22px;}
-            .botones { display: flex; justify-content: space-between; }
-            button { padding: 15px 30px; font-size: 20px; font-weight: bold; color: white; border: none; border-radius: 8px; cursor: pointer; width: 45%; }
-            .btn-restar { background: #EF4444; }
-            .btn-sumar { background: #10B981; }
-        </style>
-    </head>
-    <body>
-        <h2>📦 Buscador por Código</h2>
-        <input type="number" id="buscador" placeholder="Últimos números del código..." onkeyup="buscar()">
-        <div id="resultados"></div>
-
-        <script>
-            async function buscar() {
-                const query = document.getElementById("buscador").value;
-                if (query.length < 3) return; 
-                
-                const res = await fetch(`/api/buscar/${query}`);
-                const data = await res.json();
-                
-                const div = document.getElementById("resultados");
-                div.innerHTML = "";
-                
-                data.forEach(prod => {
-                    div.innerHTML += `
-                        <div class="producto">
-                            <h3>${prod.nombre}</h3>
-                            <div class="stock">Stock actual: <b>${prod.stock}</b></div>
-                            <div class="botones">
-                                <button class="btn-restar" onclick="actualizar('${prod.codigo}', -1)">- 1</button>
-                                <button class="btn-sumar" onclick="actualizar('${prod.codigo}', 1)">+ 1</button>
-                            </div>
-                        </div>
-                    `;
-                });
-            }
-
-            async function actualizar(codigo, variacion) {
-                await fetch('/api/actualizar', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({codigo: codigo, variacion: variacion})
-                });
-                buscar(); 
-            }
-        </script>
-    </body>
-    </html>
-    """
-    return html_content
-
-@api.get("/api/buscar/{query}")
-def buscar_producto(query: str):
-    ruta_db = obtener_ruta_db()
-    conexion = sqlite3.connect(ruta_db, check_same_thread=False)
-    cursor = conexion.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("SELECT codigo_barras, nombre, stock FROM productos WHERE codigo_barras LIKE ? LIMIT 10", (f'%{query}',))
-    resultados = [{"codigo": f[0], "nombre": f[1], "stock": f[2]} for f in cursor.fetchall()]
-    conexion.close()
-    return resultados
-
-@api.post("/api/actualizar")
-async def actualizar_stock(request: Request):
-    datos = await request.json()
-    codigo_limpio = str(datos["codigo"]).strip()
-    variacion = int(datos["variacion"])
-    
-    ruta_db = obtener_ruta_db()
-    conexion = sqlite3.connect(ruta_db, check_same_thread=False)
-    cursor = conexion.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("UPDATE productos SET stock = CAST(stock AS INTEGER) + ? WHERE codigo_barras = ?", (variacion, codigo_limpio))
-    conexion.commit()
-    conexion.close()
-    return {"status": "ok"}
-
-def arrancar_servidor():
-    uvicorn.run(api, host="0.0.0.0", port=8000, log_level="error")
-
-def obtener_ip_local():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('10.255.255.255', 1))
-        IP = s.getsockname()[0]
-    except Exception: IP = '127.0.0.1'
-    finally: s.close()
-    return IP
-
-# ==========================================
 # 🔐 PANTALLA DE LOGIN INICIAL
 # ==========================================
 class VentanaLogin(ctk.CTkToplevel):
@@ -280,12 +217,10 @@ class VentanaLogin(ctk.CTkToplevel):
         self.title("🔐 Control de Acceso")
         self.geometry("380x420")
         self.resizable(False, False)
-        
-        # Obliga al usuario a interactuar con el Login (si lo cierra con la X, se apaga el sistema)
+
         self.protocol("WM_DELETE_WINDOW", self.cancelar_ingreso)
         self.attributes("-topmost", True)
 
-        # UI
         ctk.CTkLabel(self, text="🏪 Sistema Mercado", font=("Roboto", 24, "bold")).pack(pady=(30, 10))
         ctk.CTkLabel(self, text="Seleccione su usuario:", font=("Roboto", 14)).pack(pady=(10, 5))
 
@@ -304,11 +239,14 @@ class VentanaLogin(ctk.CTkToplevel):
         self.btn_ingresar = ctk.CTkButton(self, text="Ingresar al Sistema", fg_color="#2FA572", hover_color="#238259", height=45, width=250, font=("Roboto", 16, "bold"), command=self.autenticar)
         self.btn_ingresar.pack(pady=30)
 
+    def cancelar_ingreso(self):
+        self.parent.destroy()
+        sys.exit()
+
     def obtener_usuarios(self):
         try:
             conexion = sqlite3.connect(obtener_ruta_db())
             cursor = conexion.cursor()
-            # Mostramos primero a los cajeros y luego al administrador
             cursor.execute("SELECT nombre, pin, rol FROM usuarios ORDER BY rol DESC")
             resultados = [{"nombre": f[0], "pin": f[1], "rol": f[2]} for f in cursor.fetchall()]
             conexion.close()
@@ -323,22 +261,17 @@ class VentanaLogin(ctk.CTkToplevel):
         for u in self.usuarios_db:
             if u['nombre'] == usuario_elegido:
                 if u['pin'] == pin_ingresado:
-                    # ¡ÉXITO! Guardamos los datos en el menú principal
                     self.parent.usuario_activo = u['nombre']
                     self.parent.rol_activo = u['rol']
                     
                     self.parent.configurar_por_rol()
-                    self.parent.deiconify() # Mostramos el menú principal
-                    self.destroy()          # Destruimos el Login
+                    self.parent.deiconify() 
+                    self.destroy()          
                     return
                 else:
                     messagebox.showerror("❌ Acceso Denegado", "El PIN ingresado es incorrecto.")
                     self.entry_pin.delete(0, 'end')
                     return
-                    
-    def cancelar_ingreso(self):
-        import sys
-        sys.exit() # Si cierran el login con la cruz, apaga el programa entero
 
 # ==========================================
 # 🎨 3. INTERFAZ GRÁFICA PRINCIPAL
@@ -350,106 +283,153 @@ class MenuPrincipal(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        # Ocultamos el Menú apenas arranca para mostrar el Login
         self.withdraw()
         
         self.usuario_activo = None
         self.rol_activo = None
 
         self.title("Sistema Mercado ERP - Panel de Control")
-        self.geometry("750x700")
+        self.geometry("750x600") 
         self.resizable(False, False)
 
-        # (Diseño del Menú Principal - Igual que antes)
         self.lbl_titulo = ctk.CTkLabel(self, text="🏪 Sistema Mercado", font=("Roboto", 28, "bold"))
         self.lbl_titulo.pack(pady=(20, 5))
         
-        # Renglón dinámico para saludar al usuario
         self.lbl_subtitulo = ctk.CTkLabel(self, text="Cargando...", font=("Roboto", 14), text_color="gray")
         self.lbl_subtitulo.pack(pady=(0, 20))
 
         self.frame_central = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_central.pack(fill="both", expand=True, padx=20)
-
-        # ----- COLUMNA IZQUIERDA: BOTONES -----
-        self.col_botones = ctk.CTkFrame(self.frame_central, fg_color="transparent")
-        self.col_botones.pack(side="left", fill="y", padx=20)
-
-        self.btn_caja = ctk.CTkButton(self.col_botones, text="🛒 Abrir Caja Registradora", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_caja)
-        self.btn_caja.pack(pady=7)
-
-        self.btn_stock = ctk.CTkButton(self.col_botones, text="📦 Gestionar Stock", width=250, height=45, font=("Roboto", 15, "bold"), command=self.gestionar_stock)
-        self.btn_stock.pack(pady=7)
+        self.frame_central.pack(fill="both", expand=True, padx=40)
         
-        self.btn_libreta = ctk.CTkButton(self.col_botones, text="📓 Libreta de Fiados", fg_color="#1E88E5", hover_color="#1565C0", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_libreta)
-        self.btn_libreta.pack(pady=7)
+        self.frame_central.grid_columnconfigure(0, weight=1)
+        self.frame_central.grid_columnconfigure(1, weight=1)
 
-        self.btn_arqueo = ctk.CTkButton(self.col_botones, text="🏦 Arqueo y Cierres", width=250, height=45, font=("Roboto", 15, "bold"), command=self.abrir_arqueo)
-        self.btn_arqueo.pack(pady=7)
+        self.btn_caja = ctk.CTkButton(self.frame_central, text="🛒 Abrir Caja Registradora", height=50, font=("Roboto", 15, "bold"), command=self.abrir_caja)
+        self.btn_caja.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
 
-        self.btn_gastos = ctk.CTkButton(self.col_botones, text="💸 Pagos del Día", height=45, font=("Roboto", 15, "bold"), fg_color="#D32F2F", hover_color="#B71C1C", command=lambda: VentanaGastos(self))
-        self.btn_gastos.pack(pady=7, fill="x")
-
-        self.btn_estadisticas = ctk.CTkButton(self.col_botones, text="📊 Historial y Estadísticas", height=45, font=("Roboto", 15, "bold"), fg_color="#F59E0B", hover_color="#D97706", command=lambda: VentanaEstadisticas(self))
-        self.btn_estadisticas.pack(pady=7, fill="x")
-
-        self.btn_ajustes = ctk.CTkButton(self.col_botones, text="⚙️ Ajustes del Local", fg_color="#546E7A", hover_color="#455A64", height=45, font=("Roboto", 15, "bold"), command=self.abrir_ajustes)
-        self.btn_ajustes.pack(pady=7, fill="x")
+        self.btn_stock = ctk.CTkButton(self.frame_central, text="📦 Gestionar Stock", height=50, font=("Roboto", 15, "bold"), command=self.gestionar_stock)
+        self.btn_stock.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
         
-        self.btn_backup = ctk.CTkButton(self.col_botones, text="📦 Crear Copia de Seguridad", fg_color="#4CAF50", hover_color="#388E3C", height=45, font=("Roboto", 15, "bold"), command=self.hacer_backup)
-        self.btn_backup.pack(pady=(15, 7), fill="x")
+        self.btn_libreta = ctk.CTkButton(self.frame_central, text="📓 Libreta de Fiados", fg_color="#1E88E5", hover_color="#1565C0", height=50, font=("Roboto", 15, "bold"), command=self.abrir_libreta)
+        self.btn_libreta.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
 
-        # ----- COLUMNA DERECHA: CONEXIÓN MÓVIL -----
-        self.col_movil = ctk.CTkFrame(self.frame_central, fg_color="#1E293B", corner_radius=15)
-        self.col_movil.pack(side="right", fill="both", expand=True, padx=20, pady=10)
+        self.btn_arqueo = ctk.CTkButton(self.frame_central, text="🏦 Arqueo y Cierres", height=50, font=("Roboto", 15, "bold"), command=self.abrir_arqueo)
+        self.btn_arqueo.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
 
-        self.lbl_movil_titulo = ctk.CTkLabel(self.col_movil, text="📱 Conexión Móvil (Góndolas)", font=("Roboto", 16, "bold"), text_color="white")
-        self.lbl_movil_titulo.pack(pady=(15, 10))
+        self.btn_gastos = ctk.CTkButton(self.frame_central, text="💸 Pagos del Día", height=50, font=("Roboto", 15, "bold"), fg_color="#D32F2F", hover_color="#B71C1C", command=lambda: VentanaGastos(self))
+        self.btn_gastos.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
 
-        ip_actual = obtener_ip_local()
-        self.url_servidor = f"http://{ip_actual}:8000"
+        self.btn_estadisticas = ctk.CTkButton(self.frame_central, text="📊 Historial y Estadísticas", height=50, font=("Roboto", 15, "bold"), fg_color="#F59E0B", hover_color="#D97706", command=lambda: VentanaEstadisticas(self))
+        self.btn_estadisticas.grid(row=2, column=1, padx=10, pady=10, sticky="ew")
+
+        self.btn_ajustes = ctk.CTkButton(self.frame_central, text="⚙️ Ajustes del Local", fg_color="#546E7A", hover_color="#455A64", height=50, font=("Roboto", 15, "bold"), command=self.abrir_ajustes)
+        self.btn_ajustes.grid(row=3, column=0, padx=10, pady=10, sticky="ew")
         
-        qr_crudo = qrcode.make(self.url_servidor)
-        img_qr_pil = qr_crudo.get_image().convert("RGB")
-        self.qr_ctk = ctk.CTkImage(light_image=img_qr_pil, dark_image=img_qr_pil, size=(180, 180))
-        
-        self.lbl_qr = ctk.CTkLabel(self.col_movil, text="", image=self.qr_ctk)
-        self.lbl_qr.pack(pady=10)
+        self.btn_backup = ctk.CTkButton(self.frame_central, text="📦 Crear Copia de Seguridad", fg_color="#4CAF50", hover_color="#388E3C", height=50, font=("Roboto", 15, "bold"), command=self.hacer_backup)
+        self.btn_backup.grid(row=3, column=1, padx=10, pady=10, sticky="ew")
 
-        self.lbl_ip = ctk.CTkLabel(self.col_movil, text=f"Servidor Activo en:\n{self.url_servidor}", font=("Roboto", 12), text_color="#2FA572")
-        self.lbl_ip.pack(pady=5)
-
-        # ----- FOOTER -----
         self.switch_tema = ctk.CTkSwitch(self, text="🌙 Modo Oscuro", command=self.cambiar_tema, font=("Roboto", 12))
         self.switch_tema.pack(side="bottom", pady=20)
         self.switch_tema.select()
-
-        self.hilo_api = threading.Thread(target=arrancar_servidor, daemon=True)
-        self.hilo_api.start()
         
-        # 🔐 INVOCAMOS AL LOGIN INICIAL ANTES DE DEJAR ENTRAR
         self.after(200, self.mostrar_login)
 
     def mostrar_login(self):
-        # Abre la ventana de login como un pop-up bloqueante
         login = VentanaLogin(self)
         self.wait_window(login)
 
     def configurar_por_rol(self):
-        # Actualizamos el saludo
         self.lbl_subtitulo.configure(text=f"Sesión iniciada por: {self.usuario_activo} | Nivel: {self.rol_activo}")
-        
+        self.after(500, self.verificar_backup_diario)
+
         # 🛡️ RESTRICCIONES PARA CAJEROS
         if self.rol_activo == "CAJERO":
-            # Cambiamos el color a un gris apagado para indicar que no se puede apretar
             color_bloqueado = "#333333"
-            
             self.btn_stock.configure(state="disabled", fg_color=color_bloqueado)
             self.btn_estadisticas.configure(state="disabled", fg_color=color_bloqueado)
             self.btn_ajustes.configure(state="disabled", fg_color=color_bloqueado)
             self.btn_backup.configure(state="disabled", fg_color=color_bloqueado)
+            
+        # 🤖 ASISTENTE AUTOMÁTICO DE FIN DE MES PARA EL DUEÑO (Solo si hay facturas)
+        elif self.rol_activo in ["MASTER", "ADMINISTRADOR"]:
+            hoy = datetime.now()
+            # Si estamos entre el día 1 y 5 del mes...
+            if 1 <= hoy.day <= 5:
+                # Esperamos 1 segundo para que cargue la interfaz antes de revisar
+                self.after(1000, self.verificar_y_recordar_contador)
+
+    def verificar_y_recordar_contador(self):
+        hoy = datetime.now()
+        primer_dia_mes_actual = hoy.replace(day=1)
+        mes_anterior = primer_dia_mes_actual - timedelta(days=1)
+        str_mes_anterior = mes_anterior.strftime("%Y-%m")
+        
+        try:
+            conexion = sqlite3.connect(obtener_ruta_db())
+            cursor = conexion.cursor()
+            
+            # Revisamos si emitió FACTURAS AFIP el mes pasado
+            cursor.execute("""
+                SELECT COUNT(*) FROM ventas 
+                WHERE strftime('%Y-%m', fecha) = ? 
+                AND tipo_comprobante != 'TICKET NO FISCAL' 
+                AND tipo_comprobante IS NOT NULL
+            """, (str_mes_anterior,))
+            
+            cantidad_fiscales = cursor.fetchone()[0]
+            conexion.close()
+            
+            # MAGIA: Solo avisamos si realmente facturó en blanco
+            if cantidad_fiscales > 0:
+                mensaje = (
+                    f"¡Hola {self.usuario_activo}! 👋\n\n"
+                    f"Noté que emitiste {cantidad_fiscales} facturas de AFIP en {mes_anterior.strftime('%B')} (el mes pasado).\n"
+                    f"¿Querés exportar el Excel ahora para enviárselo al contador?\n\n"
+                    f"(Podés hacerlo más tarde desde la sección Estadísticas)"
+                )
+                if messagebox.askyesno("📊 Cierre de Mes Fiscal", mensaje, parent=self):
+                    VentanaEstadisticas(self).abrir_menu_exportar()
+        except Exception:
+            pass # Si falla por algún motivo (ej. base recién creada), se queda en silencio y no molesta.
+
+    def verificar_backup_diario(self):
+        """Crea un backup diario y mantiene solo los últimos 30 días rotativos"""
+        try:
+            ruta_original = obtener_ruta_db()
+            carpeta_backups = os.path.join(os.path.dirname(ruta_original), "backups")
+            os.makedirs(carpeta_backups, exist_ok=True)
+            
+            # 1. Armamos el nombre del backup de HOY
+            hoy_str = datetime.now().strftime("%Y%m%d")
+            nombre_backup_hoy = f"respaldo_auto_{hoy_str}.db"
+            ruta_copia_hoy = os.path.join(carpeta_backups, nombre_backup_hoy)
+            
+            # 2. Si no existe el backup de hoy, lo creamos
+            if not os.path.exists(ruta_copia_hoy):
+                import shutil
+                shutil.copy2(ruta_original, ruta_copia_hoy)
+                print(f"✅ Backup diario automático creado: {nombre_backup_hoy}")
+                
+            # 3. Mantenimiento Rotativo (Limpieza a 30 días)
+            # Buscamos todos los archivos que empiecen con 'respaldo_auto_'
+            backups = [f for f in os.listdir(carpeta_backups) if f.startswith('respaldo_auto_') and f.endswith('.db')]
+            
+            if len(backups) > 30:
+                # Ordenamos alfabéticamente al revés (los más nuevos arriba, porque el nombre tiene el año/mes/día)
+                backups.sort(reverse=True)
+                
+                # Agarramos del 31 en adelante y los borramos sin piedad
+                backups_a_borrar = backups[30:]
+                for backup_viejo in backups_a_borrar:
+                    ruta_borrar = os.path.join(carpeta_backups, backup_viejo)
+                    os.remove(ruta_borrar)
+                    print(f"🗑️ Backup viejo eliminado por rotación: {backup_viejo}")
+                    
+        except Exception as e:
+            print(f"Aviso - Error en rutina de backup diario: {e}")
 
     def hacer_backup(self):
+        """Botón manual que además educa al usuario sobre la nube"""
         ruta_original = obtener_ruta_db()
         directorio_base = os.path.dirname(ruta_original)
         
@@ -461,12 +441,27 @@ class MenuPrincipal(ctk.CTk):
         os.makedirs(carpeta_backups, exist_ok=True)
         
         fecha_hora = datetime.now().strftime("%Y%m%d_%H%M")
-        nombre_copia = f"respaldo_{fecha_hora}.db"
+        nombre_copia = f"respaldo_manual_{fecha_hora}.db"
         ruta_copia = os.path.join(carpeta_backups, nombre_copia)
         
         try:
             shutil.copy2(ruta_original, ruta_copia)
-            messagebox.showinfo("✅ Backup Exitoso", f"Se creó una copia de seguridad de sus datos.\nGuardada como: {nombre_copia}\nEn la carpeta: backups")
+            
+            # Mensaje educativo con emojis para que sea amigable
+            mensaje = (
+                f"✅ Copia de seguridad guardada con éxito.\n\n"
+                f"📁 Archivo: {nombre_copia}\n"
+                f"📍 Ubicación: Carpeta 'backups'\n\n"
+                f"☁️ CONSEJO DE SEGURIDAD:\n"
+                f"Te sugerimos guardar este archivo en tu Google Drive, "
+                f"enviártelo por WhatsApp, o guardarlo en un Pendrive. \n\n"
+                f"¡Si a tu computadora le pasa algo, con ese archivo recuperás todo tu negocio!"
+            )
+            messagebox.showinfo("Respaldo Exitoso", mensaje)
+            
+            # Opcional: Le abrimos la carpeta de Windows para que vea el archivo y lo pueda arrastrar a Drive
+            os.startfile(carpeta_backups)
+            
         except Exception as e:
             messagebox.showerror("❌ Error", f"No se pudo crear el backup:\n{e}")
 
